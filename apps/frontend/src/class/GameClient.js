@@ -821,6 +821,36 @@ class GameClient {
     return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
   }
 
+  #hexToRgba(hex, alpha) {
+    if (!hex || hex.length < 7) return `rgba(18, 18, 20, ${alpha})`;
+    const r = parseInt(hex.slice(1, 3), 16) || 0;
+    const g = parseInt(hex.slice(3, 5), 16) || 0;
+    const b = parseInt(hex.slice(5, 7), 16) || 0;
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  }
+
+  #drawFogOverlay() {
+    if (!this.player) return;
+
+    const cs = getComputedStyle(document.documentElement);
+    const tileFill = cs.getPropertyValue('--canvas-tile-fill').trim() || '#121214';
+
+    const cx = this.canvas.width / 2;
+    const cy = this.canvas.height / 2;
+    const visionRadius = this.#getVisionRadius(this.player.size || 10);
+    const screenRadius = visionRadius * this.zoom;
+    const innerR = Math.max(0, screenRadius * 0.5);
+    const outerR = Math.max(innerR + 1, Math.hypot(cx, cy));
+
+    const grad = this.ctx.createRadialGradient(cx, cy, innerR, cx, cy, outerR);
+    grad.addColorStop(0, this.#hexToRgba(tileFill, 0));
+    grad.addColorStop(0.65, this.#hexToRgba(tileFill, 0.55));
+    grad.addColorStop(1, this.#hexToRgba(tileFill, 0.96));
+
+    this.ctx.fillStyle = grad;
+    this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+  }
+
   #drawSnakeSegment(cx, cy, radius, color, borderColor) {
     const r = Math.max(1, Math.floor(radius));
     const px = Math.floor(radius * 0.25);
@@ -1143,6 +1173,7 @@ class GameClient {
     this.#drawBoostParticles(camX, camY, camR, camB);
 
     this.ctx.restore();
+    this.#drawFogOverlay();
     this.#drawMinimap();
   }
 
@@ -1166,7 +1197,15 @@ class GameClient {
     const MARGIN = 1.15;
     const minDim = Math.min(this.canvas.width, this.canvas.height);
     const zoom = minDim / (visionRadius * 2 * MARGIN);
-    return Math.min(2.2, Math.max(0.35, zoom));
+
+    // Hard cap regardless of vision radius: never show more than half the map
+    // along either screen axis (i.e. never more than a quarter of its area).
+    const MAX_VISIBLE_FRACTION = 0.5;
+    const maxDim = Math.max(this.canvas.width, this.canvas.height);
+    const worldCapZoom =
+      maxDim / (Math.min(this.worldWidth, this.worldHeight) * MAX_VISIBLE_FRACTION);
+
+    return Math.min(2.2, Math.max(0.35, worldCapZoom, zoom));
   }
 
   #updateZoom() {
