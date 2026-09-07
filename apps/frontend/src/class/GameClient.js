@@ -6,6 +6,8 @@ class GameClient {
     this.soundMusic = new Audio('../assets/pixel-song.mp3');
 
     this.soundButton = document.querySelector('#sound-button');
+    this.sfxButton = document.querySelector('#sfx-button');
+    this.sfxEnabled = true;
     this.loading = document.querySelector('#loading');
     this.game = document.querySelector('#game');
     this.menu = document.querySelector('#menu');
@@ -209,11 +211,18 @@ class GameClient {
 
         document.addEventListener('keydown', (e) => {
           if (this.escMenuOpen) return;
-          if (e.keyCode == 32 && !this.isSpaceHeld) {
+          if (
+            e.keyCode == 32 &&
+            !this.isSpaceHeld &&
+            this.player &&
+            this.player.points > 0
+          ) {
             this.isSpaceHeld = true;
-            this.speedMusic.currentTime = 0;
-            this.speedMusic.volume = 0.1;
-            this.speedMusic.play();
+            if (this.sfxEnabled) {
+              this.speedMusic.currentTime = 0;
+              this.speedMusic.volume = 0.1;
+              this.speedMusic.play();
+            }
             this.socket.emit('player-speed', true);
           }
         });
@@ -364,12 +373,20 @@ class GameClient {
       'touchstart',
       (e) => {
         e.preventDefault();
-        if (this.escMenuOpen || this.isSpaceHeld) return;
+        if (
+          this.escMenuOpen ||
+          this.isSpaceHeld ||
+          !this.player ||
+          this.player.points <= 0
+        )
+          return;
         this.isSpaceHeld = true;
         boost.classList.add('active');
-        this.speedMusic.currentTime = 0;
-        this.speedMusic.volume = 0.1;
-        this.speedMusic.play();
+        if (this.sfxEnabled) {
+          this.speedMusic.currentTime = 0;
+          this.speedMusic.volume = 0.1;
+          this.speedMusic.play();
+        }
         this.socket.emit('player-speed', true);
       },
       { passive: false },
@@ -415,6 +432,7 @@ class GameClient {
 
     this.socket.on('boost-stop', () => {
       this.isSpaceHeld = false;
+      this.speedMusic.pause();
       this.socket.emit('player-speed', false);
       if (this.isMobile && this.boostButton) {
         this.boostButton.classList.remove('active');
@@ -1197,6 +1215,19 @@ class GameClient {
 
   async #pauseSound() {
     this.soundMusic.pause();
+  }
+
+  toggleSfx() {
+    this.sfxEnabled = !this.sfxEnabled;
+    this.sfxButton.querySelector('.on').style.display = this.sfxEnabled
+      ? 'block'
+      : 'none';
+    this.sfxButton.querySelector('.off').style.display = this.sfxEnabled
+      ? 'none'
+      : 'block';
+    if (!this.sfxEnabled) {
+      this.speedMusic.pause();
+    }
   }
 
   async #playSound() {
