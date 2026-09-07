@@ -20,6 +20,7 @@ const app = express();
 
 app.use(cors());
 app.use(express.static('../frontend/src'));
+app.use(express.static('../frontend/public'));
 
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
