@@ -37,6 +37,8 @@ class GameClient {
 
     this.cameraX = 0;
     this.cameraY = 0;
+    this.zoom = 1;
+    this._targetZoom = 1;
 
     this.spectatorX = 2000;
     this.spectatorY = 2000;
@@ -61,6 +63,17 @@ class GameClient {
     this.isMobile = !window.matchMedia('(any-pointer: fine)').matches;
     this.joystickActive = false;
     this.joystickTouchId = null;
+
+    // Block browser page-zoom (ctrl+wheel / pinch, which Chrome reports as
+    // wheel+ctrlKey) so it can't be used to see further than the intended
+    // vision radius by shrinking the whole page.
+    window.addEventListener(
+      'wheel',
+      (e) => {
+        if (e.ctrlKey) e.preventDefault();
+      },
+      { passive: false },
+    );
 
     this._resizeTimeout = null;
     window.addEventListener('resize', () => {
@@ -174,8 +187,8 @@ class GameClient {
 
       const vx = this.cameraX * scaleX;
       const vy = this.cameraY * scaleY;
-      const vw = this.canvas.width * scaleX;
-      const vh = this.canvas.height * scaleY;
+      const vw = (this.canvas.width / this.zoom) * scaleX;
+      const vh = (this.canvas.height / this.zoom) * scaleY;
       mctx.strokeStyle = 'rgba(255, 255, 255, 0.6)';
       mctx.lineWidth = 1;
       mctx.strokeRect(vx, vy, vw, vh);
@@ -301,11 +314,9 @@ class GameClient {
       const now = performance.now();
       if (now - lastDirEmit < 33) return;
       lastDirEmit = now;
-      const centerX = window.innerWidth / 2;
-      const centerY = window.innerHeight / 2;
       const dirLen = 200;
-      const rawX = centerX + Math.cos(angle) * dirLen + this.cameraX;
-      const rawY = centerY + Math.sin(angle) * dirLen + this.cameraY;
+      const rawX = this.player.x + Math.cos(angle) * dirLen;
+      const rawY = this.player.y + Math.sin(angle) * dirLen;
       const mouseX = this.#wrapCoord(rawX, this.worldWidth);
       const mouseY = this.#wrapCoord(rawY, this.worldHeight);
       this.socket.emit('change-dir', { mouseX, mouseY });
@@ -623,8 +634,8 @@ class GameClient {
 
   #clientToWrappedWorld(clientX, clientY) {
     return {
-      mouseX: this.#wrapCoord(clientX + this.cameraX, this.worldWidth),
-      mouseY: this.#wrapCoord(clientY + this.cameraY, this.worldHeight),
+      mouseX: this.#wrapCoord(clientX / this.zoom + this.cameraX, this.worldWidth),
+      mouseY: this.#wrapCoord(clientY / this.zoom + this.cameraY, this.worldHeight),
     };
   }
 
@@ -1009,12 +1020,13 @@ class GameClient {
     this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
 
     this.ctx.save();
+    this.ctx.scale(this.zoom, this.zoom);
     this.ctx.translate(-this.cameraX, -this.cameraY);
 
     const camX = this.cameraX;
     const camY = this.cameraY;
-    const camR = camX + this.canvas.width;
-    const camB = camY + this.canvas.height;
+    const camR = camX + this.canvas.width / this.zoom;
+    const camB = camY + this.canvas.height / this.zoom;
 
     this.#drawTiledBackground(camX, camY, camR, camB);
 
@@ -1134,7 +1146,42 @@ class GameClient {
     this.#drawMinimap();
   }
 
+  // Keep in sync with GameServer.js#getFogRadius -- vision grows with snake size
+  // from spawn (10) to the growth cap (100) that calculatePlayerNewSize enforces.
+  #getVisionRadius(size) {
+    const SPAWN_SIZE = 10;
+    const GROWTH_CAP_SIZE = 100;
+    const FOG_RADIUS_MIN = 300;
+    const FOG_RADIUS_MAX = 2500;
+    const t = Math.min(
+      1,
+      Math.max(0, (size - SPAWN_SIZE) / (GROWTH_CAP_SIZE - SPAWN_SIZE)),
+    );
+    return FOG_RADIUS_MIN + (FOG_RADIUS_MAX - FOG_RADIUS_MIN) * t;
+  }
+
+  #getTargetZoom(visionRadius) {
+    // Fit the vision circle's diameter to the smaller canvas dimension, with a
+    // little margin so the fog edge isn't flush against the screen edge.
+    const MARGIN = 1.15;
+    const minDim = Math.min(this.canvas.width, this.canvas.height);
+    const zoom = minDim / (visionRadius * 2 * MARGIN);
+    return Math.min(2.2, Math.max(0.35, zoom));
+  }
+
+  #updateZoom() {
+    if (this.player) {
+      const visionRadius = this.#getVisionRadius(this.player.size || 10);
+      this._targetZoom = this.#getTargetZoom(visionRadius);
+    } else {
+      this._targetZoom = 1;
+    }
+    this.zoom += (this._targetZoom - this.zoom) * 0.05;
+  }
+
   #cameraFollow(alpha) {
+    this.#updateZoom();
+
     let camX, camY;
     if (this.player) {
       const pos = this.#getRenderPos(this.player, alpha);
@@ -1145,8 +1192,8 @@ class GameClient {
       camY = this.spectatorY;
     }
 
-    this.cameraX = camX - this.canvas.width / 2;
-    this.cameraY = camY - this.canvas.height / 2;
+    this.cameraX = camX - this.canvas.width / this.zoom / 2;
+    this.cameraY = camY - this.canvas.height / this.zoom / 2;
   }
 
   #updateUI() {
