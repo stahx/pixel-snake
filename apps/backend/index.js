@@ -32,7 +32,10 @@ const gameConfig = {
   NORMAL_SPEED: 1.3,
   BOOST_SPEED: 2.3,
   TICK_RATE: 60,
-  FOG_RADIUS: 2000,
+  // Vision radius scales with snake size (see Player.js spawn size / calculatePlayerNewSize
+  // growth cap): small at spawn, growing toward FOG_RADIUS_MAX as the snake grows.
+  FOG_RADIUS_MIN: 500,
+  FOG_RADIUS_MAX: 2500,
 };
 
 const game = new GameServer(io, gameConfig);
