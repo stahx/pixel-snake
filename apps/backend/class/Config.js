@@ -7,7 +7,8 @@ export default class Config {
       NORMAL_SPEED,
       BOOST_SPEED,
       TICK_RATE,
-      FOG_RADIUS,
+      FOG_RADIUS_MIN = 500,
+      FOG_RADIUS_MAX = 2500,
       MIN_PLAYERS = 5,
     } = config;
 
@@ -17,7 +18,8 @@ export default class Config {
     this.NORMAL_SPEED = NORMAL_SPEED;
     this.BOOST_SPEED = BOOST_SPEED;
     this.TICK_RATE = TICK_RATE;
-    this.FOG_RADIUS = FOG_RADIUS;
+    this.FOG_RADIUS_MIN = FOG_RADIUS_MIN;
+    this.FOG_RADIUS_MAX = FOG_RADIUS_MAX;
     this.MIN_PLAYERS = MIN_PLAYERS;
   }
 }

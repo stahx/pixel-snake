@@ -512,6 +512,21 @@ class GameServer {
       });
   }
 
+  #getFogRadius(player) {
+    // Vision grows with snake size: SPAWN_SIZE matches Player.js's default spawn
+    // size, GROWTH_CAP_SIZE matches the size calculatePlayerNewSize stops growing
+    // past (helpers/gameServer.js). Below spawn size (shouldn't normally happen)
+    // or above the cap, radius clamps to FOG_RADIUS_MIN / FOG_RADIUS_MAX.
+    const SPAWN_SIZE = 10;
+    const GROWTH_CAP_SIZE = 100;
+    const { FOG_RADIUS_MIN, FOG_RADIUS_MAX } = this.config;
+    const t = Math.min(
+      1,
+      Math.max(0, (player.size - SPAWN_SIZE) / (GROWTH_CAP_SIZE - SPAWN_SIZE)),
+    );
+    return FOG_RADIUS_MIN + (FOG_RADIUS_MAX - FOG_RADIUS_MIN) * t;
+  }
+
   torusDistSq(px, py, ex, ey) {
     const W = this.config.MAP_WIDTH;
     const H = this.config.MAP_HEIGHT;
@@ -561,9 +576,6 @@ class GameServer {
       }
     }
 
-    const R = this.config.FOG_RADIUS;
-    const FOG_RADIUS_SQ = R * R;
-
     for (const player of players) {
       if (this.botManager.isBot(player.playerId)) continue;
       const prevVisible = this.playerState.get(player.playerId);
@@ -571,6 +583,8 @@ class GameServer {
 
       const playerX = player.x;
       const playerY = player.y;
+      const R = this.#getFogRadius(player);
+      const FOG_RADIUS_SQ = R * R;
 
       const added = [];
       const updated = [];
