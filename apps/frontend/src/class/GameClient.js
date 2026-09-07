@@ -35,6 +35,9 @@ class GameClient {
     this.worldWidth = 4000;
     this.worldHeight = 4000;
 
+    this._warnGradients = null;
+    this._warnGradientKey = null;
+
     this.cameraX = 0;
     this.cameraY = 0;
 
@@ -663,6 +666,29 @@ class GameClient {
     }
   }
 
+  #getWarnGradients(wrapWarn, W, H, WARN) {
+    const cached = this._warnGradients;
+    if (this._warnGradientKey === wrapWarn && cached && cached.w === W && cached.h === H) {
+      return cached;
+    }
+    const clear = 'rgba(0,0,0,0)';
+    const left = this.ctx.createLinearGradient(0, 0, WARN, 0);
+    left.addColorStop(0, wrapWarn);
+    left.addColorStop(1, clear);
+    const right = this.ctx.createLinearGradient(W - WARN, 0, W, 0);
+    right.addColorStop(0, clear);
+    right.addColorStop(1, wrapWarn);
+    const top = this.ctx.createLinearGradient(0, 0, 0, WARN);
+    top.addColorStop(0, wrapWarn);
+    top.addColorStop(1, clear);
+    const bottom = this.ctx.createLinearGradient(0, H - WARN, 0, H);
+    bottom.addColorStop(0, clear);
+    bottom.addColorStop(1, wrapWarn);
+    this._warnGradients = { left, right, top, bottom, w: W, h: H };
+    this._warnGradientKey = wrapWarn;
+    return this._warnGradients;
+  }
+
   #drawTiledBackground(camX, camY, camR, camB) {
     const W = this.worldWidth;
     const H = this.worldHeight;
@@ -695,30 +721,20 @@ class GameClient {
     this.ctx.beginPath();
     this.ctx.rect(camX, camY, camR - camX, camB - camY);
     this.ctx.clip();
+    const warn = this.#getWarnGradients(wrapWarn, W, H, WARN);
     for (let kx = minKx; kx <= maxKx; kx++) {
       for (let ky = minKy; ky <= maxKy; ky++) {
-        const ox = kx * W;
-        const oy = ky * H;
-        let g = this.ctx.createLinearGradient(ox, oy, ox + WARN, oy);
-        g.addColorStop(0, wrapWarn);
-        g.addColorStop(1, 'rgba(0,0,0,0)');
-        this.ctx.fillStyle = g;
-        this.ctx.fillRect(ox, oy, WARN, H);
-        g = this.ctx.createLinearGradient(ox + W - WARN, oy, ox + W, oy);
-        g.addColorStop(0, 'rgba(0,0,0,0)');
-        g.addColorStop(1, wrapWarn);
-        this.ctx.fillStyle = g;
-        this.ctx.fillRect(ox + W - WARN, oy, WARN, H);
-        g = this.ctx.createLinearGradient(ox, oy, ox, oy + WARN);
-        g.addColorStop(0, wrapWarn);
-        g.addColorStop(1, 'rgba(0,0,0,0)');
-        this.ctx.fillStyle = g;
-        this.ctx.fillRect(ox, oy, W, WARN);
-        g = this.ctx.createLinearGradient(ox, oy + H - WARN, ox, oy + H);
-        g.addColorStop(0, 'rgba(0,0,0,0)');
-        g.addColorStop(1, wrapWarn);
-        this.ctx.fillStyle = g;
-        this.ctx.fillRect(ox, oy + H - WARN, W, WARN);
+        this.ctx.save();
+        this.ctx.translate(kx * W, ky * H);
+        this.ctx.fillStyle = warn.left;
+        this.ctx.fillRect(0, 0, WARN, H);
+        this.ctx.fillStyle = warn.right;
+        this.ctx.fillRect(W - WARN, 0, WARN, H);
+        this.ctx.fillStyle = warn.top;
+        this.ctx.fillRect(0, 0, W, WARN);
+        this.ctx.fillStyle = warn.bottom;
+        this.ctx.fillRect(0, H - WARN, W, WARN);
+        this.ctx.restore();
       }
     }
     this.ctx.restore();

@@ -374,7 +374,15 @@ class GameServer {
     const W = this.config.MAP_WIDTH;
     const H = this.config.MAP_HEIGHT;
     const pw = player.size;
-    for (const point of this.points.values()) {
+    const nearby = this.getNearbyCellsTorus(
+      player.x,
+      player.y,
+      player.size + 25,
+    );
+
+    for (const point of nearby) {
+      if (point.type !== 'point') continue;
+
       if (
         this.#aabbOverlapTorus(
           player.x,
