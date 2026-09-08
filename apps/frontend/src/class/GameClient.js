@@ -1177,9 +1177,11 @@ class GameClient {
   }
 
   #getTargetZoom(visionRadius) {
-    // Fit the vision circle's diameter to the smaller canvas dimension, with a
-    // little margin so the fog edge isn't flush against the screen edge.
-    const MARGIN = 1.15;
+    // Fit the vision circle's diameter to the smaller canvas dimension. A
+    // MARGIN below 1 crops in tighter than the circle itself (more zoomed
+    // in); above 1 leaves breathing room beyond the circle (more zoomed
+    // out, shows more of the map than the circle alone).
+    const MARGIN = 0.85;
     const minDim = Math.min(this.canvas.width, this.canvas.height);
     const zoom = minDim / (visionRadius * 2 * MARGIN);
     return Math.min(2.2, Math.max(0.35, zoom));
