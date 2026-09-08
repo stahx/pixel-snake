@@ -31,3 +31,5 @@ if you need a different port.
 - `apps/backend` — game server (Express, Socket.IO, game loop)
 - `apps/frontend` — canvas-based client (plain JS, Tailwind for UI chrome)
 - `apps/shared` — shared code between the two
+
+See [CHANGELOG.md](./CHANGELOG.md) for recent changes.
