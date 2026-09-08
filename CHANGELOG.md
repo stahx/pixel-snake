@@ -1,6 +1,6 @@
 # Changelog
 
-## 2026-09-08 — Refresh after a long hiatus
+## v2.4.0-beta — 2026-09-08 — Refresh after a long hiatus
 
 This project sat mostly untouched for a few months. This round picked it
 back up: fixed a handful of long-standing bugs, tuned the fog-of-war /
@@ -29,6 +29,8 @@ CODEOWNERS, branch protection on `main`).
   instead of abruptly popping in/out (PR #6)
 - Browser page-zoom (ctrl+wheel / pinch) is now blocked, since it could be
   used to see further than the intended vision radius (PR #6)
+- Camera zoom fit tightened further after live feedback that the map was
+  still showing more than intended at low-mid snake size (PR #8)
 - Dev server port is now configurable via `apps/backend/.env` (see
   `.env.example`), defaulting to 3030 (PR #4)
 
