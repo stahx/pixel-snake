@@ -1,5 +1,5 @@
 {
-	"name": "@slitherio-pixel/backend",
+	"name": "@pixel-snake/backend",
 	"version": "1.0.0",
 	"description": "",
 	"main": "index.js",

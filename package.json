@@ -1,5 +1,5 @@
 {
-  "name": "slitherio-pixel",
+  "name": "pixel-snake",
   "version": "2.4.0-beta",
   "description": "Pixel snake game inspired by slitherio",
   "main": "index.js",

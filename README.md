@@ -1,3 +1,9 @@
+<p align="center">
+  <img src="apps/frontend/public/icon-512.png" alt="Pixel Snake icon" width="120" />
+</p>
+
+<h1 align="center">Pixel Snake</h1>
+
 ## Project info
 This project was made during free time in school, just for fun. </br>
 Do with it whatever you want.
