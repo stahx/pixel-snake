@@ -1,5 +1,5 @@
 {
-  "name": "@slitherio-pixel/frontend",
+  "name": "@pixel-snake/frontend",
   "type": "module",
   "private": true,
   "scripts": {
