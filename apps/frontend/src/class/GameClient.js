@@ -1182,7 +1182,7 @@ class GameClient {
   #getVisionRadius(size) {
     const SPAWN_SIZE = 10;
     const GROWTH_CAP_SIZE = 100;
-    const FOG_RADIUS_MIN = 300;
+    const FOG_RADIUS_MIN = 200;
     const FOG_RADIUS_MAX = 2500;
     const t = Math.min(
       1,
