@@ -1,3 +1,5 @@
+import { EventEmitter } from 'node:events';
+
 import Player from './Player.js';
 import Tail from './Tail.js';
 import Point from './Point.js';
@@ -12,13 +14,17 @@ import {
 } from '../helpers/index.js';
 
 const GRID_CELL_SIZE = 100;
+const MAX_ROTATION_SPEED = 0.08; // radians per tick - lower = slower turning
+const BOOST_COST_TICKS = 10;
 
-class GameServer {
+class GameServer extends EventEmitter {
   constructor(io, config) {
+    super();
     this.io = io;
     this.config = new Config(config);
 
     this.running = false;
+    this.tick = 0;
 
     this.players = new Map();
     this.tails = new Map();
@@ -30,13 +36,26 @@ class GameServer {
 
     this.playerState = new Map();
     this.spectators = new Map();
+    this.sockets = new Map();
+    this.agents = new Map();
 
     this.grid = new Map();
 
     this.humanSockets = new Set();
     this.botManager = new BotManager(this);
 
-    this.io.on('connection', (socket) => {
+    this.io.on('connection', (socket) => this.connect(socket));
+  }
+
+  connect(socket, agent = null) {
+    this.sockets.set(socket.id, socket);
+    socket.on('env-info', () => socket.emit('env-info', this.#envInfo()));
+    socket.on('player-join', (data) => this.#joinPlayer(socket, agent ? agent.name : data.name));
+
+    if (agent) {
+      this.agents.set(socket.id, agent);
+      this.#joinPlayer(socket, agent.name);
+    } else {
       const initialSnapshot = [];
       for (const e of this.allEntities.values()) {
         initialSnapshot.push(this.#serializeEntity(e));
@@ -52,76 +71,45 @@ class GameServer {
         });
       }
       this.spectators.set(socket.id, spectatorMap);
+    }
+    socket.emit('env-info', this.#envInfo());
 
-      socket.on('player-join', (data) => {
-        const playerExists = this.#getPlayerEntity(socket.id);
-        if (playerExists) {
-          return;
+    socket.on('player-speed', (data) => {
+      const player = this.#getPlayerEntity(socket.id);
+      if (player) {
+        player.speed = data;
+      }
+    });
+
+    socket.on('change-dir', (data) => {
+      const player = this.#getPlayerEntity(socket.id);
+      if (player) {
+        player.mouseX = data.mouseX;
+        player.mouseY = data.mouseY;
+      }
+    });
+
+    socket.on('disconnect', () => {
+      const player = this.#getPlayerEntity(socket.id);
+      if (player?.agent) this.#endEpisode(player, 'disconnect');
+      this.sockets.delete(socket.id);
+      this.agents.delete(socket.id);
+      this.playerState.delete(socket.id);
+      this.spectators.delete(socket.id);
+      this.removePlayerEntities(socket.id);
+      const wasHuman = this.humanSockets.delete(socket.id);
+      if (wasHuman) {
+        if (this.humanSockets.size === 0) {
+          this.#clearWorld();
+        } else {
+          this.botManager.reconcile();
         }
+      }
+      this.#emitUpdate();
+    });
 
-        const position = getRandomPosition(
-          this.config.MAP_WIDTH,
-          this.config.MAP_HEIGHT
-        );
-
-        const playerEntity = new Player(position.x, position.y, {
-          playerId: socket.id,
-          name: data.name.slice(0, 15),
-          color: getRandomColor(),
-          size: 10,
-          points: 0,
-        });
-
-        this.players.set(socket.id, playerEntity);
-        this.allEntities.set(playerEntity.id, playerEntity);
-        this.tails.set(socket.id, []);
-        this.playerState.set(socket.id, new Map());
-        this.spectators.delete(socket.id);
-        if (!this.humanSockets.has(socket.id)) {
-          const wasEmpty = this.humanSockets.size === 0;
-          this.humanSockets.add(socket.id);
-          if (wasEmpty) {
-            this.#populateWorld();
-          } else {
-            this.botManager.reconcile();
-          }
-        }
-        this.#emitUpdate();
-      });
-
-      socket.on('player-speed', (data) => {
-        const player = this.#getPlayerEntity(socket.id);
-        if (player) {
-          player.speed = data;
-        }
-      });
-
-      socket.on('change-dir', (data) => {
-        const player = this.#getPlayerEntity(socket.id);
-        if (player) {
-          player.mouseX = data.mouseX;
-          player.mouseY = data.mouseY;
-        }
-      });
-
-      socket.on('disconnect', () => {
-        this.playerState.delete(socket.id);
-        this.spectators.delete(socket.id);
-        this.removePlayerEntities(socket.id);
-        const wasHuman = this.humanSockets.delete(socket.id);
-        if (wasHuman) {
-          if (this.humanSockets.size === 0) {
-            this.#clearWorld();
-          } else {
-            this.botManager.reconcile();
-          }
-        }
-        this.#emitUpdate();
-      });
-
-      socket.on('ping-check', () => {
-        socket.emit('pong-check');
-      });
+    socket.on('ping-check', () => {
+      socket.emit('pong-check');
     });
   }
 
@@ -130,8 +118,43 @@ class GameServer {
   }
 
   start() {
-    this.#mainLoop();
+    setInterval(() => this.step(), 1000 / this.config.TICK_RATE);
     this.running = true;
+  }
+
+  #joinPlayer(socket, name) {
+    if (this.#getPlayerEntity(socket.id)) return;
+
+    const position = getRandomPosition(
+      this.config.MAP_WIDTH,
+      this.config.MAP_HEIGHT
+    );
+
+    const playerEntity = new Player(position.x, position.y, {
+      playerId: socket.id,
+      name: name.slice(0, 15),
+      color: getRandomColor(),
+      size: 10,
+      points: 0,
+    });
+    playerEntity.agent = this.agents.get(socket.id) || null;
+    playerEntity.bornTick = this.tick;
+
+    this.players.set(socket.id, playerEntity);
+    this.allEntities.set(playerEntity.id, playerEntity);
+    this.tails.set(socket.id, []);
+    this.playerState.set(socket.id, new Map());
+    this.spectators.delete(socket.id);
+    if (!this.humanSockets.has(socket.id)) {
+      const wasEmpty = this.humanSockets.size === 0;
+      this.humanSockets.add(socket.id);
+      if (wasEmpty) {
+        this.#populateWorld();
+      } else {
+        this.botManager.reconcile();
+      }
+    }
+    this.#emitUpdate();
   }
 
   #clearWorld() {
@@ -149,130 +172,128 @@ class GameServer {
     this.botManager.reconcile();
   }
 
-  #mainLoop() {
-    const MAX_ROTATION_SPEED = 0.08; // radians per tick - lower = slower turning
+  step() {
+    this.tick++;
+    this.#rebuildGrid();
 
-    setInterval(() => {
-      this.#rebuildGrid();
+    const players = this.#getPlayerEntities();
 
-      const players = this.#getPlayerEntities();
+    for (const player of players) {
+      const pcx = player.x + player.size / 2;
+      const pcy = player.y + player.size / 2;
+      let aimDx = player.mouseX - pcx;
+      let aimDy = player.mouseY - pcy;
+      const MW = this.config.MAP_WIDTH;
+      const MH = this.config.MAP_HEIGHT;
+      if (aimDx > MW / 2) aimDx -= MW;
+      else if (aimDx < -MW / 2) aimDx += MW;
+      if (aimDy > MH / 2) aimDy -= MH;
+      else if (aimDy < -MH / 2) aimDy += MH;
 
-      for (const player of players) {
-        const pcx = player.x + player.size / 2;
-        const pcy = player.y + player.size / 2;
-        let aimDx = player.mouseX - pcx;
-        let aimDy = player.mouseY - pcy;
-        const MW = this.config.MAP_WIDTH;
-        const MH = this.config.MAP_HEIGHT;
-        if (aimDx > MW / 2) aimDx -= MW;
-        else if (aimDx < -MW / 2) aimDx += MW;
-        if (aimDy > MH / 2) aimDy -= MH;
-        else if (aimDy < -MH / 2) aimDy += MH;
+      player.diffX = aimDx;
+      player.diffY = aimDy;
 
-        player.diffX = aimDx;
-        player.diffY = aimDy;
+      let pointDist = Math.sqrt(
+        player.diffX * player.diffX + player.diffY * player.diffY
+      );
 
-        let pointDist = Math.sqrt(
-          player.diffX * player.diffX + player.diffY * player.diffY
-        );
+      // Calculate target angle from mouse position
+      const targetAngle = Math.atan2(player.diffY, player.diffX);
 
-        // Calculate target angle from mouse position
-        const targetAngle = Math.atan2(player.diffY, player.diffX);
+      // Calculate angle difference (shortest path)
+      let angleDiff = targetAngle - player.currentAngle;
 
-        // Calculate angle difference (shortest path)
-        let angleDiff = targetAngle - player.currentAngle;
+      // Normalize to -PI to PI range
+      while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+      while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
 
-        // Normalize to -PI to PI range
-        while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
-        while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
-
-        // Limit rotation speed
-        if (angleDiff > MAX_ROTATION_SPEED) {
-          angleDiff = MAX_ROTATION_SPEED;
-        } else if (angleDiff < -MAX_ROTATION_SPEED) {
-          angleDiff = -MAX_ROTATION_SPEED;
-        }
-
-        // Apply limited rotation
-        player.currentAngle += angleDiff;
-
-        // Use the limited angle for movement direction
-        player.diffX = Math.cos(player.currentAngle);
-        player.diffY = Math.sin(player.currentAngle);
-
-        if (player.speed && player.points <= 0) {
-          player.speed = false;
-          if (!this.botManager.isBot(player.playerId)) {
-            this.io.to(player.playerId).emit('boost-stop');
-          }
-        }
-
-        if (player.speed) {
-          if (!player._boostTick) player._boostTick = 0;
-          player._boostTick++;
-          if (player._boostTick % 10 === 0) {
-            player.points = Math.max(0, player.points - 1);
-            const tailArr = this.tails.get(player.playerId);
-            if (tailArr && tailArr.length > 0) {
-              const shed = tailArr.shift();
-              this.allEntities.delete(shed.id);
-              this.#generatePoint(shed.x, shed.y, 8);
-            }
-          }
-        } else {
-          player._boostTick = 0;
-        }
-
-        const moveX = player.speed
-          ? player.diffX * this.config.BOOST_SPEED
-          : player.diffX * this.config.NORMAL_SPEED;
-        const moveY = player.speed
-          ? player.diffY * this.config.BOOST_SPEED
-          : player.diffY * this.config.NORMAL_SPEED;
-
-        player.x += moveX;
-        player.y += moveY;
-
-        player.x = ((player.x % MW) + MW) % MW;
-        player.y = ((player.y % MH) + MH) % MH;
-
-        player.mouseX += moveX;
-        player.mouseY += moveY;
-
-        if (!player.tailCounter) {
-          player.tailCounter = 0;
-        }
-        player.tailCounter++;
-
-        const tailEntities = this.#getTailEntities(player.playerId);
-        const tailLimit = tailEntities.length > player.points * 2;
-        const shouldAddTail = player.tailCounter % 5 === 0;
-
-        if (pointDist > 0 && !tailLimit && shouldAddTail) {
-          const tailEntity = new Tail(player.x, player.y, {
-            playerId: player.playerId,
-            color: player.color,
-          });
-          this.tails.get(player.playerId).push(tailEntity);
-          this.allEntities.set(tailEntity.id, tailEntity);
-        }
-
-        if (tailLimit && tailEntities.length > 0) {
-          const tailArr = this.tails.get(player.playerId);
-          const removed = tailArr.shift();
-          this.allEntities.delete(removed.id);
-        }
-
-        this.#detectPointCollisions(player);
-        this.#detectTailCollisions(player);
-
-        player.size = calculatePlayerNewSize(player);
+      // Limit rotation speed
+      if (angleDiff > MAX_ROTATION_SPEED) {
+        angleDiff = MAX_ROTATION_SPEED;
+      } else if (angleDiff < -MAX_ROTATION_SPEED) {
+        angleDiff = -MAX_ROTATION_SPEED;
       }
 
-      this.botManager.tick();
+      // Apply limited rotation
+      player.currentAngle += angleDiff;
 
-      this.#emitUpdate();
-    }, 1000 / this.config.TICK_RATE);
+      // Use the limited angle for movement direction
+      player.diffX = Math.cos(player.currentAngle);
+      player.diffY = Math.sin(player.currentAngle);
+
+      if (player.speed && player.points <= 0) {
+        player.speed = false;
+        if (!this.botManager.isBot(player.playerId)) {
+          this.sockets.get(player.playerId).emit('boost-stop');
+        }
+      }
+
+      if (player.speed) {
+        if (!player._boostTick) player._boostTick = 0;
+        player._boostTick++;
+        if (player._boostTick % BOOST_COST_TICKS === 0) {
+          player.points = Math.max(0, player.points - 1);
+          player.boostSpent++;
+          const tailArr = this.tails.get(player.playerId);
+          if (tailArr && tailArr.length > 0) {
+            const shed = tailArr.shift();
+            this.allEntities.delete(shed.id);
+            this.#generatePoint(shed.x, shed.y, 8);
+          }
+        }
+      } else {
+        player._boostTick = 0;
+      }
+
+      const moveX = player.speed
+        ? player.diffX * this.config.BOOST_SPEED
+        : player.diffX * this.config.NORMAL_SPEED;
+      const moveY = player.speed
+        ? player.diffY * this.config.BOOST_SPEED
+        : player.diffY * this.config.NORMAL_SPEED;
+
+      player.x += moveX;
+      player.y += moveY;
+
+      player.x = ((player.x % MW) + MW) % MW;
+      player.y = ((player.y % MH) + MH) % MH;
+
+      player.mouseX += moveX;
+      player.mouseY += moveY;
+
+      if (!player.tailCounter) {
+        player.tailCounter = 0;
+      }
+      player.tailCounter++;
+
+      const tailEntities = this.#getTailEntities(player.playerId);
+      const tailLimit = tailEntities.length > player.points * 2;
+      const shouldAddTail = player.tailCounter % 5 === 0;
+
+      if (pointDist > 0 && !tailLimit && shouldAddTail) {
+        const tailEntity = new Tail(player.x, player.y, {
+          playerId: player.playerId,
+          color: player.color,
+        });
+        this.tails.get(player.playerId).push(tailEntity);
+        this.allEntities.set(tailEntity.id, tailEntity);
+      }
+
+      if (tailLimit && tailEntities.length > 0) {
+        const tailArr = this.tails.get(player.playerId);
+        const removed = tailArr.shift();
+        this.allEntities.delete(removed.id);
+      }
+
+      this.#detectPointCollisions(player);
+      this.#detectTailCollisions(player);
+
+      player.size = calculatePlayerNewSize(player);
+    }
+
+    this.botManager.tick();
+
+    this.#emitUpdate();
   }
 
   #rebuildGrid() {
@@ -349,7 +370,19 @@ class GameServer {
     return out;
   }
 
-  #killPlayer(player) {
+  #endEpisode(player, cause) {
+    this.emit('episode-end', {
+      agent: player.agent,
+      score: player.points,
+      maxScore: player.maxPoints,
+      ticks: this.tick - player.bornTick,
+      eaten: player.eaten,
+      boostSpent: player.boostSpent,
+      cause,
+    });
+  }
+
+  #killPlayer(player, killer) {
     const spawnPoints = player.points;
     const tailEntities = this.#getTailEntities(player.playerId);
     const allSegments = [{ x: player.x, y: player.y }, ...tailEntities];
@@ -365,7 +398,11 @@ class GameServer {
       this.botManager.remove(player.playerId);
       this.botManager.reconcile();
     } else {
-      this.io.to(player.playerId).emit('ded');
+      if (player.agent) {
+        const cause = this.botManager.isBot(killer.playerId) ? 'bot' : killer.agent ? 'agent' : 'human';
+        this.#endEpisode(player, cause);
+      }
+      this.sockets.get(player.playerId).emit('ded');
       this.removePlayerEntities(player.playerId);
     }
   }
@@ -437,7 +474,7 @@ class GameServer {
           H,
         )
       ) {
-        this.#killPlayer(player);
+        this.#killPlayer(player, tailPlayer);
         break;
       }
     }
@@ -449,6 +486,8 @@ class GameServer {
     // Bigger points give more points (size 8 = 1pt, size 16 = 2pts, size 24 = 3pts)
     const pointValue = Math.max(1, Math.floor(point.size / 8));
     player.points += pointValue;
+    player.eaten += pointValue;
+    player.maxPoints = Math.max(player.maxPoints, player.points);
     this.#generatePoint();
   }
 
@@ -525,6 +564,29 @@ class GameServer {
       Math.max(0, (player.size - SPAWN_SIZE) / (GROWTH_CAP_SIZE - SPAWN_SIZE)),
     );
     return FOG_RADIUS_MIN + (FOG_RADIUS_MAX - FOG_RADIUS_MIN) * t;
+  }
+
+  #envInfo() {
+    const c = this.config;
+    return {
+      map: { width: c.MAP_WIDTH, height: c.MAP_HEIGHT, wraps: true },
+      tickRate: c.TICK_RATE,
+      speed: { normal: c.NORMAL_SPEED, boost: c.BOOST_SPEED },
+      maxTurnPerTick: MAX_ROTATION_SPEED,
+      boostCost: { points: 1, everyTicks: BOOST_COST_TICKS },
+      fogRadius: { min: c.FOG_RADIUS_MIN, max: c.FOG_RADIUS_MAX },
+      pointsOnMap: this.points.size,
+      players: {
+        total: this.players.size,
+        bots: this.botManager.bots.size,
+        clients: this.humanSockets.size,
+      },
+      actions: [
+        { event: 'player-join', payload: { name: 'string, max 15 chars' } },
+        { event: 'change-dir', payload: { mouseX: 'number', mouseY: 'number' } },
+        { event: 'player-speed', payload: 'boolean' },
+      ],
+    };
   }
 
   torusDistSq(px, py, ex, ey) {
@@ -671,7 +733,7 @@ class GameServer {
       if (leaderboard) updateData.l = leaderboard;
 
       if (added.length || updated.length || removed.length || leaderboard) {
-        this.io.to(player.playerId).emit('update', updateData);
+        this.sockets.get(player.playerId).emit('update', updateData);
       }
     }
 
@@ -754,7 +816,7 @@ class GameServer {
       if (removed.length) updateData.r = removed;
 
       if (added.length || updated.length || removed.length) {
-        this.io.to(socketId).emit('update', updateData);
+        this.sockets.get(socketId).emit('update', updateData);
       }
     }
   }

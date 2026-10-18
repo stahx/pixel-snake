@@ -5,8 +5,10 @@ import express from 'express';
 import http from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
-import dotenv from 'dotenv';
-dotenv.config();
+import 'dotenv/config';
+import { pool } from './db/pool.js';
+import { attachLab } from './lab/agents.js';
+import { labRouter } from './lab/router.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const rootPkg = JSON.parse(readFileSync(join(__dirname, '../../package.json'), 'utf-8'));
@@ -19,6 +21,7 @@ const host = process.env.HOST || '127.0.0.1';
 const app = express();
 
 app.use(cors());
+app.use('/lab', express.static(join(__dirname, '../frontend/dist/lab')));
 app.use(express.static('../frontend/src'));
 app.use(express.static('../frontend/public'));
 
@@ -40,6 +43,9 @@ const gameConfig = {
 
 const game = new GameServer(io, gameConfig);
 game.start();
+
+const lab = attachLab({ io, game, pool, flushMinutes: Number(process.env.LAB_FLUSH_MINUTES) || 5 });
+app.use('/api/lab', labRouter({ pool, lab, password: process.env.LAB_ADMIN_PASSWORD }));
 
 app.get('/version', (req, res) => {
   return res.json({ version: rootPkg.version });

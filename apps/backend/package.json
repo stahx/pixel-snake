@@ -6,7 +6,9 @@
 	"type": "module",
 	"scripts": {
 		"dev": "nodemon index.js",
-		"start": "node index.js"
+		"start": "node index.js",
+		"db:migrate": "node db/migrate.js",
+		"test": "node --test class/*.test.js lab/*.test.js"
 	},
 	"keywords": [],
 	"author": "",
@@ -17,6 +19,7 @@
 		"cors": "^2.8.5",
 		"dotenv": "^17.2.3",
 		"express": "^4.21.2",
+		"pg": "^8.23.1",
 		"socket.io": "^4.8.1"
 	}
 }
