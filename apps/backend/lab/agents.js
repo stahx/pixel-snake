@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { hostname } from 'node:os';
 
 import { hashKey } from './keys.js';
 import { addEpisode, addMetrics, createProgress, summarize } from './progress.js';
@@ -6,6 +7,7 @@ import { addEpisode, addMetrics, createProgress, summarize } from './progress.js
 const RUN_NAME = /^[\w .:-]{1,40}$/;
 const METRIC_NAME = /^[\w./-]{1,40}$/;
 const MAX_METRICS = 32;
+const SYNC_MS = 2000;
 
 const metricsError = (values) => {
   if (!values || typeof values !== 'object' || Array.isArray(values)) return 'log expects an object of numbers';
@@ -15,9 +17,23 @@ const metricsError = (values) => {
   return bad ? `Invalid metric ${JSON.stringify(bad[0])}: names match ${METRIC_NAME}, values are finite numbers` : null;
 };
 
-export function attachLab({ io, game, pool, flushMinutes }) {
+const mergeRuns = (instances) => {
+  const merged = new Map();
+  for (const run of instances.flat()) {
+    const known = merged.get(run.runId) || { ...run, agents: [], pending: { episodes: 0, scoreMax: null } };
+    known.agents.push(...run.agents);
+    known.pending.episodes += run.pending?.episodes ?? 0;
+    if (run.pending?.scoreMax != null) known.pending.scoreMax = Math.max(known.pending.scoreMax ?? 0, run.pending.scoreMax);
+    merged.set(run.runId, known);
+  }
+  return [...merged.values()];
+};
+
+export function attachLab({ io, game, pool, flushMinutes, room }) {
   const namespace = io.of('/lab');
   const runs = new Map();
+  const instance = `${hostname()}:${room}`;
+  let published = false;
 
   namespace.use(async (socket, next) => {
     if (!pool) return next(new Error('Lab is disabled: DATABASE_URL is not set'));
@@ -89,28 +105,61 @@ export function attachLab({ io, game, pool, flushMinutes }) {
     if (run) addEpisode(run.progress, episode);
   });
 
+  const localRuns = () => [...runs.values()].map((run) => ({
+    runId: run.id,
+    name: run.name,
+    agents: [...run.sockets].map((socket) => {
+      const player = game.players.get(socket.id);
+      return player
+        ? { room, alive: true, score: player.points, ticks: game.tick - player.bornTick }
+        : { room, alive: false, score: 0, ticks: 0 };
+    }),
+    pending: summarize(run.progress),
+  }));
+
+  const disconnectKey = (keyId) => {
+    for (const run of runs.values()) {
+      if (run.keyId === keyId) run.sockets.forEach((socket) => socket.disconnect(true));
+    }
+  };
+
+  async function sync() {
+    try {
+      if (!runs.size) {
+        if (published) await pool.query('DELETE FROM lab_live WHERE instance = $1', [instance]);
+        published = false;
+        return;
+      }
+      await pool.query(
+        `INSERT INTO lab_live(instance, runs) VALUES ($1, $2)
+         ON CONFLICT (instance) DO UPDATE SET runs = $2, updated_at = now()`,
+        [instance, JSON.stringify(localRuns())],
+      );
+      published = true;
+      const keyIds = [...new Set([...runs.values()].map((run) => run.keyId))];
+      const revoked = await pool.query('SELECT id FROM lab_keys WHERE revoked_at IS NOT NULL AND id = ANY($1)', [keyIds]);
+      revoked.rows.forEach(({ id }) => disconnectKey(id));
+    } catch (error) {
+      console.error('Lab sync:', error.message);
+    }
+  }
+
   setInterval(() => runs.forEach(flush), flushMinutes * 60_000).unref();
+  if (pool) setInterval(sync, SYNC_MS).unref();
 
   return {
-    live: () => ({
-      tickRate: game.config.TICK_RATE,
-      flushMinutes,
-      runs: [...runs.values()].map((run) => ({
-        runId: run.id,
-        name: run.name,
-        agents: [...run.sockets].map((socket) => {
-          const player = game.players.get(socket.id);
-          return player
-            ? { alive: true, score: player.points, ticks: game.tick - player.bornTick }
-            : { alive: false, score: 0, ticks: 0 };
-        }),
-        pending: summarize(run.progress),
-      })),
-    }),
-    disconnectKey: (keyId) => {
-      for (const run of runs.values()) {
-        if (run.keyId === keyId) run.sockets.forEach((socket) => socket.disconnect(true));
-      }
+    live: async () => {
+      const others = await pool.query(
+        `SELECT runs FROM lab_live WHERE instance <> $1 AND updated_at > now() - interval '10 seconds'`,
+        [instance],
+      );
+      return {
+        tickRate: game.config.TICK_RATE,
+        flushMinutes,
+        runs: mergeRuns([localRuns(), ...others.rows.map((row) => row.runs)]),
+      };
     },
+    sync,
+    disconnectKey,
   };
 }

@@ -21,10 +21,7 @@ export default class BotManager {
   }
 
   reconcile() {
-    const humanCount = this.game.humanSockets.size;
-    const desired = humanCount > 0
-      ? Math.max(0, this.game.config.MIN_PLAYERS - humanCount)
-      : 0;
+    const desired = this.game.humanSockets.size > 0 ? this.game.config.BOTS : 0;
     const current = this.bots.size;
 
     if (current < desired) {

@@ -7,6 +7,7 @@
 	"scripts": {
 		"dev": "nodemon index.js",
 		"start": "node index.js",
+		"rooms": "node rooms.js",
 		"db:migrate": "node db/migrate.js",
 		"test": "node --test class/*.test.js lab/*.test.js"
 	},

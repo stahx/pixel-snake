@@ -9,10 +9,15 @@ const KEY = 'psl_test-key';
 const KEY_ID = 'key-1';
 const RUN_ID = 'run-1';
 const EPISODE = { score: 5, maxScore: 8, ticks: 300, eaten: 9, boostSpent: 1, cause: 'bot' };
+const OTHER_ROOM_RUNS = [
+  { runId: RUN_ID, name: 'ppo-run-1', agents: [{ room: '3032', alive: false, score: 0, ticks: 0 }], pending: { episodes: 2, scoreMax: 12 } },
+  { runId: 'run-2', name: 'dqn', agents: [{ room: '3032', alive: true, score: 1, ticks: 5 }], pending: null },
+];
 
 let middleware;
 let onConnection;
 let queries;
+let revokedKeys;
 let game;
 let lab;
 
@@ -21,6 +26,8 @@ const pool = {
     queries.push({ sql, params });
     if (sql.startsWith('UPDATE lab_keys')) return params[0] === hashKey(KEY) ? { rows: [{ id: KEY_ID }], rowCount: 1 } : { rows: [], rowCount: 0 };
     if (sql.startsWith('INSERT INTO lab_runs')) return { rows: [{ id: RUN_ID }], rowCount: 1 };
+    if (sql.startsWith('SELECT runs FROM lab_live')) return { rows: [{ runs: OTHER_ROOM_RUNS }] };
+    if (sql.startsWith('SELECT id FROM lab_keys')) return { rows: params[0].filter((id) => revokedKeys.includes(id)).map((id) => ({ id })) };
     return { rows: [], rowCount: 1 };
   },
 };
@@ -49,6 +56,7 @@ const connectAgent = async (id) => {
 describe('lab/agents', () => {
   beforeEach(() => {
     queries = [];
+    revokedKeys = [];
     const io = { of: () => ({ use: (fn) => { middleware = fn; }, on: (event, fn) => { onConnection = fn; } }) };
     game = Object.assign(new EventEmitter(), {
       tick: 100,
@@ -56,7 +64,7 @@ describe('lab/agents', () => {
       players: new Map(),
       connect(socket, agent) { this.players.set(socket.id, { points: 3, bornTick: 40, agent }); },
     });
-    lab = attachLab({ io, game, pool, flushMinutes: 5 });
+    lab = attachLab({ io, game, pool, flushMinutes: 5, room: '3031' });
   });
 
   test('attachLab', async () => {
@@ -76,12 +84,41 @@ describe('lab/agents', () => {
     const socket = await connectAgent('agent-1');
     game.emit('episode-end', { ...EPISODE, agent: socket.data.agent });
 
-    const { tickRate, flushMinutes, runs: [run] } = lab.live();
+    const { tickRate, flushMinutes, runs } = await lab.live();
     assert.equal(tickRate, 60);
     assert.equal(flushMinutes, 5);
-    assert.equal(run.name, 'ppo-run-1');
-    assert.deepEqual(run.agents, [{ alive: true, score: 3, ticks: 60 }]);
-    assert.equal(run.pending.episodes, 1);
+    assert.deepEqual(runs, [
+      {
+        runId: RUN_ID,
+        name: 'ppo-run-1',
+        agents: [{ room: '3031', alive: true, score: 3, ticks: 60 }, { room: '3032', alive: false, score: 0, ticks: 0 }],
+        pending: { episodes: 3, scoreMax: 12 },
+      },
+      { runId: 'run-2', name: 'dqn', agents: [{ room: '3032', alive: true, score: 1, ticks: 5 }], pending: { episodes: 0, scoreMax: null } },
+    ]);
+  });
+
+  test('sync', async () => {
+    await lab.sync();
+    assert.equal(queries.length, 0);
+
+    const socket = await connectAgent('agent-1');
+    let closed = false;
+    socket.disconnect = () => { closed = true; };
+    await lab.sync();
+    const upsert = queries.find((q) => q.sql.startsWith('INSERT INTO lab_live'));
+    assert.equal(upsert.params[0].endsWith(':3031'), true);
+    assert.equal(JSON.parse(upsert.params[1])[0].runId, RUN_ID);
+    assert.equal(closed, false);
+
+    revokedKeys = [KEY_ID];
+    await lab.sync();
+    assert.equal(closed, true);
+
+    socket.handlers.disconnect();
+    queries = [];
+    await lab.sync();
+    assert.equal(queries.some((q) => q.sql.startsWith('DELETE FROM lab_live')), true);
   });
 
   test('log', async () => {
@@ -89,8 +126,11 @@ describe('lab/agents', () => {
     socket.handlers.log({ loss: 0.4, 'policy/entropy': 1.2 });
     socket.handlers.log({ loss: Infinity });
     socket.handlers.log('loss');
+    socket.handlers.disconnect();
+    await new Promise(setImmediate);
 
-    assert.deepEqual(lab.live().runs[0].pending.metrics, { loss: 0.4, 'policy/entropy': 1.2 });
+    const insert = queries.find((q) => q.sql.includes('INSERT INTO lab_progress'));
+    assert.equal(insert.params[8], '{"loss":0.4,"policy/entropy":1.2}');
     assert.equal(socket.emitted.filter((m) => m.event === 'lab-error').length, 2);
   });
 
@@ -107,7 +147,7 @@ describe('lab/agents', () => {
     await new Promise(setImmediate);
     const insert = queries.find((q) => q.sql.includes('INSERT INTO lab_progress'));
     assert.deepEqual(insert.params, [RUN_ID, 2, 14, 20, 300, 9, 1, '{"bot":1,"human":1}', '{}']);
-    assert.deepEqual(lab.live().runs, []);
+    assert.equal((await lab.live()).runs.some((run) => run.agents.some((agent) => agent.room === '3031')), false);
   });
 
   test('disconnectKey', async () => {

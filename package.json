@@ -10,6 +10,7 @@
     "dev": "pnpm -r dev",
     "db:up": "docker compose up -d postgres",
     "db:migrate": "pnpm --filter @pixel-snake/backend db:migrate",
+    "lab:rooms": "pnpm --filter @pixel-snake/backend rooms",
     "test": "pnpm --filter @pixel-snake/backend test"
   },
   "keywords": [],

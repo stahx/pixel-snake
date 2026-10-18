@@ -45,7 +45,7 @@ describe('class/GameServer', () => {
     assert.equal(game.spectators.has('agent-1'), false);
     const info = sent.find((m) => m.event === 'env-info').data;
     assert.deepEqual(info.map, { width: 4000, height: 4000, wraps: true });
-    assert.deepEqual(info.players, { total: 5, bots: 4, clients: 1 });
+    assert.deepEqual(info.players, { total: 11, bots: 10, clients: 1 });
     assert.deepEqual(info.actions.map((a) => a.event), ['player-join', 'change-dir', 'player-speed']);
     const updates = sent.filter((m) => m.event === 'update');
     assert.equal(updates.length, 1);

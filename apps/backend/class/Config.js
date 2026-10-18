@@ -9,7 +9,7 @@ export default class Config {
       TICK_RATE,
       FOG_RADIUS_MIN = 500,
       FOG_RADIUS_MAX = 2500,
-      MIN_PLAYERS = 5,
+      BOTS = 10,
     } = config;
 
     this.MAP_WIDTH = MAP_WIDTH;
@@ -20,6 +20,6 @@ export default class Config {
     this.TICK_RATE = TICK_RATE;
     this.FOG_RADIUS_MIN = FOG_RADIUS_MIN;
     this.FOG_RADIUS_MAX = FOG_RADIUS_MAX;
-    this.MIN_PLAYERS = MIN_PLAYERS;
+    this.BOTS = BOTS;
   }
 }

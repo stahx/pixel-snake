@@ -277,10 +277,11 @@ onUnmounted(() => clearInterval(timer));
           <article v-if="liveRun" class="card">
             <h2>Na żywo</h2>
             <table>
-              <thead><tr><th>Agent</th><th>Stan</th><th>Wynik</th><th>Czas życia</th></tr></thead>
+              <thead><tr><th>Agent</th><th>Pokój</th><th>Stan</th><th>Wynik</th><th>Czas życia</th></tr></thead>
               <tbody>
                 <tr v-for="(agent, i) in liveRun.agents" :key="i">
                   <td>#{{ i + 1 }}</td>
+                  <td>{{ agent.room }}</td>
                   <td>{{ agent.alive ? 'Żyje' : 'Czeka na respawn' }}</td>
                   <td>{{ number(agent.score) }}</td>
                   <td>{{ number(seconds(agent.ticks)) }} s</td>

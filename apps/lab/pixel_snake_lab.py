@@ -7,20 +7,36 @@ import socketio
 
 NAMESPACE = '/lab'
 ENTITY_TYPES = ('point', 'tail', 'player')
-KEYS = {'i': 'id', 't': 'type', 'x': 'x', 'y': 'y', 'c': 'color', 's': 'size',
-        'p': 'player', 'n': 'name', 'pt': 'points', 'a': 'angle', 'b': 'boosting'}
+FIELD_NAMES = {'i': 'id', 't': 'type', 'x': 'x', 'y': 'y', 'c': 'color', 's': 'size',
+               'p': 'player', 'n': 'name', 'pt': 'points', 'a': 'angle', 'b': 'boosting'}
+AIM_DISTANCE = 200
 
 
-def apply_update(entities, data):
-    for raw in data.get('a', []):
-        entity = {KEYS[k]: v for k, v in raw.items()}
+def load_env(path=os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')):
+    if not os.path.exists(path):
+        return
+    with open(path) as file:
+        for line in file:
+            name, equals, value = line.strip().partition('=')
+            if equals and not name.startswith('#'):
+                os.environ.setdefault(name.strip(), value.strip().strip('\'"'))
+
+
+def rename_fields(wire_entity):
+    return {FIELD_NAMES[short_name]: value for short_name, value in wire_entity.items()}
+
+
+def apply_update(entities, update):
+    for wire_entity in update.get('a', []):
+        entity = rename_fields(wire_entity)
         entity['type'] = ENTITY_TYPES[entity['type']]
         entities[entity['id']] = entity
-    for raw in data.get('u', []):
-        if raw['i'] in entities:
-            entities[raw['i']] = {**entities[raw['i']], **{KEYS[k]: v for k, v in raw.items()}}
-    for entity_id in data.get('r', []):
-        entities.pop(entity_id, None)
+    for wire_change in update.get('u', []):
+        change = rename_fields(wire_change)
+        if change['id'] in entities:
+            entities[change['id']] = {**entities[change['id']], **change}
+    for removed_id in update.get('r', []):
+        entities.pop(removed_id, None)
 
 
 class Game:
@@ -41,6 +57,7 @@ class Game:
         self._sio.on('lab-error', lambda message: warnings.warn(message), namespace=NAMESPACE)
         self._sio.on('connect_error', self._on_connect_error, namespace=NAMESPACE)
         self._sio.on('disconnect', self._on_disconnect, namespace=NAMESPACE)
+        load_env()
         key = key or os.environ['PIXEL_SNAKE_LAB_KEY']
         try:
             self._sio.connect(url, auth={'key': key, 'run': run}, namespaces=[NAMESPACE], transports=['websocket'])
@@ -53,8 +70,8 @@ class Game:
     @property
     def me(self):
         with self._changed:
-            return next((e for e in self.entities.values()
-                         if e['type'] == 'player' and e['player'] == self.sid), None)
+            return next((entity for entity in self.entities.values()
+                         if entity['type'] == 'player' and entity['player'] == self.sid), None)
 
     def observe(self, timeout=1.0):
         with self._changed:
@@ -71,8 +88,9 @@ class Game:
     def steer(self, angle):
         me = self.me
         if me:
-            cx, cy = me['x'] + me['size'] / 2, me['y'] + me['size'] / 2
-            self.aim(cx + math.cos(angle) * 200, cy + math.sin(angle) * 200)
+            head_x = me['x'] + me['size'] / 2
+            head_y = me['y'] + me['size'] / 2
+            self.aim(head_x + math.cos(angle) * AIM_DISTANCE, head_y + math.sin(angle) * AIM_DISTANCE)
 
     def boost(self, on):
         self._emit('player-speed', bool(on))
@@ -108,11 +126,11 @@ class Game:
             self.info = info
             self._changed.notify_all()
 
-    def _on_update(self, data):
+    def _on_update(self, update):
         with self._changed:
-            apply_update(self.entities, data)
-            if 'l' in data:
-                self.leaderboard = data['l']
+            apply_update(self.entities, update)
+            if 'l' in update:
+                self.leaderboard = update['l']
             self.alive = self.me is not None
             self.tick += 1
             self._changed.notify_all()

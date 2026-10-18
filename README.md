@@ -69,7 +69,7 @@ pnpm db:up
 In `apps/backend/.env` (keep your existing PORT/HOST):
 
 ```
-DATABASE_URL=postgres://pixel_snake:pixel_snake_local@127.0.0.1:5432/pixel_snake
+DATABASE_URL=postgres://pixel_snake:pixel_snake_local@127.0.0.1:5433/pixel_snake
 LAB_ADMIN_PASSWORD=<a long random password>
 LAB_FLUSH_MINUTES=5
 ```
@@ -78,6 +78,17 @@ Then run `pnpm db:migrate`, restart the backend, log in at `/lab/` and
 create a key for each machine you train from. The game runs without these
 variables; the lab namespace and panel stay disabled until both
 `DATABASE_URL` and `LAB_ADMIN_PASSWORD` are set.
+
+### Training rooms
+
+`pnpm lab:rooms 8` starts 8 more backends on ports 3031–3038 (first port:
+`LAB_FIRST_ROOM_PORT`). Each room is its own process with its own map and
+bots, so rooms use separate CPU cores; open `http://127.0.0.1:3033` to watch
+one. Every room with at least one player or agent runs `BOTS` bots (default
+10, e.g. `BOTS=5 pnpm lab:rooms 8`), however many agents join. All rooms share the
+database, so the panel on any port shows every run and every live session,
+whichever room it plays in. Revoking a key disconnects its sessions in all
+rooms within a few seconds.
 
 On a public deployment serve the game over HTTPS/WSS: the lab key travels
 in the Socket.IO handshake and the panel session in a cookie. Keys are

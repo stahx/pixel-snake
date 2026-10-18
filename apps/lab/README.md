@@ -13,7 +13,7 @@ Lab setup on the server is in the root README. Create a key in the panel
 ```sh
 cd apps/lab
 pip install -r requirements.txt   # or: uv pip install -r requirements.txt
-export PIXEL_SNAKE_LAB_KEY=psl_...
+cp .env.example .env              # paste the key after PIXEL_SNAKE_LAB_KEY=
 python example_agent.py
 ```
 
@@ -21,7 +21,8 @@ python example_agent.py
 
 `Game(url='http://127.0.0.1:3030', run='TRAINING', key=None)` opens the `/lab`
 Socket.IO namespace with `auth={'key': ..., 'run': ...}`. `key` defaults to
-`PIXEL_SNAKE_LAB_KEY`. A valid key puts the snake straight into the game, with
+`PIXEL_SNAKE_LAB_KEY`, read from the environment or from `apps/lab/.env` (the
+environment wins). A valid key puts the snake straight into the game, with
 no start button and no nickname form; the nickname is the run name (shown cut
 to 15 characters). Run names match `[A-Za-z0-9_ .:-]{1,40}`.
 
@@ -83,8 +84,8 @@ ticks to reach.
 
 ## Episode loop
 
-An episode starts at spawn and ends when `obs['alive']` becomes `False`, which
-is the server's `ded` event. Reward is defined by your algorithm. The example
+An episode starts at spawn and ends when `observation['alive']` becomes
+`False`, which is the server's `ded` event. Reward is defined by your algorithm. The example
 uses the change in points per step and −100 on death. Call `game.respawn()` to
 start the next episode.
 
@@ -92,23 +93,41 @@ start the next episode.
 from pixel_snake_lab import Game
 
 game = Game(run='ppo-run-1')
-obs = game.observe()
+observation = game.observe()
 while True:
-    action = my_policy(features(obs, game.info))
+    action = my_policy(features(observation, game.info))
     apply(action, game)               # steer / boost
-    next_obs = game.observe()
-    my_learner.record(obs, action, reward(obs, next_obs), not next_obs['alive'])
-    obs = next_obs
-    if not obs['alive']:
+    next_observation = game.observe()
+    my_learner.record(observation, action, reward(observation, next_observation), not next_observation['alive'])
+    observation = next_observation
+    if not observation['alive']:
         stats = my_learner.update()
         game.log(loss=stats.loss, entropy=stats.entropy, reward=stats.episode_return)
         game.respawn()
-        obs = game.observe()
+        observation = game.observe()
 ```
 
 The game runs in real time at 60 ticks/s, shared with any humans and bots on
 the server. Several agents can train in parallel by opening several `Game`
 connections.
+
+## Many agents, many rooms
+
+`example_agent.py` runs one Python process per server and one thread per
+training session:
+
+```sh
+python example_agent.py                                  # 1 session on :3030
+python example_agent.py --sessions 5                     # 5 sessions on :3030
+python example_agent.py --ports 3031-3050 --sessions 5   # 5 sessions on each of 20 rooms
+python example_agent.py --ports 3030,3035-3036           # a list of servers
+```
+
+Start the rooms first (`pnpm lab:rooms 20`, root README). Other flags:
+`--episodes` (per session, default 3), `--run`, `--host`. Ctrl+C stops every
+room. All sessions with one key and run name form one run; put the room in
+the name (`--run ppo-1:r3`) to compare rooms. Threads share one CPU core per
+process because of the GIL, so keep sessions per server in the tens.
 
 ## What the lab records
 

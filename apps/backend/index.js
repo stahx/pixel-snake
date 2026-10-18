@@ -39,12 +39,13 @@ const gameConfig = {
   // growth cap): small at spawn, growing toward FOG_RADIUS_MAX as the snake grows.
   FOG_RADIUS_MIN: 300,
   FOG_RADIUS_MAX: 2500,
+  BOTS: Number(process.env.BOTS) || 10,
 };
 
 const game = new GameServer(io, gameConfig);
 game.start();
 
-const lab = attachLab({ io, game, pool, flushMinutes: Number(process.env.LAB_FLUSH_MINUTES) || 5 });
+const lab = attachLab({ io, game, pool, flushMinutes: Number(process.env.LAB_FLUSH_MINUTES) || 5, room: port });
 app.use('/api/lab', labRouter({ pool, lab, password: process.env.LAB_ADMIN_PASSWORD }));
 
 app.get('/version', (req, res) => {

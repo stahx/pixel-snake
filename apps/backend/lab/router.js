@@ -112,7 +112,7 @@ export function labRouter({ pool, lab, password }) {
     res.json(result.rows);
   }));
 
-  router.get('/live', (req, res) => res.json(lab.live()));
+  router.get('/live', route(async (req, res) => res.json(await lab.live())));
 
   router.use((error, req, res, next) => {
     if (error.status) return res.status(error.status).json({ error: error.message });
