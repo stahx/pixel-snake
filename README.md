@@ -43,7 +43,7 @@ if you need a different port.
 - `apps/backend` — game server (Express, Socket.IO, game loop)
 - `apps/frontend` — canvas-based client (plain JS, Tailwind for UI chrome)
 - `apps/shared` — shared code between the two
-- `apps/lab` — Python SDK for writing RL trainers against the live game
+- `apps/lab` — Python (`py/`) and JavaScript (`js/`) SDKs and PPO trainers for the live game
 
 See [CHANGELOG.md](./CHANGELOG.md) for recent changes.
 
@@ -95,4 +95,5 @@ in the Socket.IO handshake and the panel session in a cookie. Keys are
 stored as SHA-256 hashes and can be revoked from the panel, which also
 disconnects trainers using them.
 
-`pnpm test` runs the backend specs; `cd apps/lab && pytest` runs the SDK spec.
+`pnpm test` runs the backend specs; `cd apps/lab/py && pytest` and
+`pnpm --filter @pixel-snake/lab-js test` run the lab specs.

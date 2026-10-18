@@ -23,6 +23,7 @@ h2 { font-size: 14px; font-weight: 600; margin: 0 0 12px; }
 p { line-height: 1.5; }
 code { font-family: ui-monospace, SFMono-Regular, monospace; }
 .muted { color: var(--muted); }
+a { color: var(--accent); }
 .error { color: var(--critical); border: 1px solid var(--critical); border-radius: 6px; padding: 10px 12px; margin: 0 0 16px; }
 
 button {

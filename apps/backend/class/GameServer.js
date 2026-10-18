@@ -16,6 +16,9 @@ import {
 const GRID_CELL_SIZE = 100;
 const MAX_ROTATION_SPEED = 0.08; // radians per tick - lower = slower turning
 const BOOST_COST_TICKS = 10;
+const BOOST_COST_POINTS = 2;
+const DROPPED_POINT_SIZE = 8;
+const DEATH_POINTS_KEPT = 0.7;
 
 class GameServer extends EventEmitter {
   constructor(io, config) {
@@ -232,13 +235,14 @@ class GameServer extends EventEmitter {
         if (!player._boostTick) player._boostTick = 0;
         player._boostTick++;
         if (player._boostTick % BOOST_COST_TICKS === 0) {
-          player.points = Math.max(0, player.points - 1);
-          player.boostSpent++;
+          const spent = Math.min(player.points, BOOST_COST_POINTS);
+          player.points -= spent;
+          player.boostSpent += spent;
           const tailArr = this.tails.get(player.playerId);
           if (tailArr && tailArr.length > 0) {
             const shed = tailArr.shift();
             this.allEntities.delete(shed.id);
-            this.#generatePoint(shed.x, shed.y, 8);
+            this.#generatePoint(shed.x, shed.y, DROPPED_POINT_SIZE);
           }
         }
       } else {
@@ -383,7 +387,7 @@ class GameServer extends EventEmitter {
   }
 
   #killPlayer(player, killer) {
-    const spawnPoints = player.points;
+    const spawnPoints = Math.round(player.points * DEATH_POINTS_KEPT);
     const tailEntities = this.#getTailEntities(player.playerId);
     const allSegments = [{ x: player.x, y: player.y }, ...tailEntities];
     const count = allSegments.length;
@@ -391,7 +395,7 @@ class GameServer extends EventEmitter {
     for (let i = 0; i < spawnPoints; i++) {
       const idx = count > 1 ? Math.round((i / (spawnPoints - 1 || 1)) * (count - 1)) : 0;
       const seg = allSegments[Math.min(idx, count - 1)];
-      this.#generatePoint(seg.x, seg.y);
+      this.#generatePoint(seg.x, seg.y, DROPPED_POINT_SIZE);
     }
 
     if (this.botManager.isBot(player.playerId)) {
@@ -488,7 +492,7 @@ class GameServer extends EventEmitter {
     player.points += pointValue;
     player.eaten += pointValue;
     player.maxPoints = Math.max(player.maxPoints, player.points);
-    this.#generatePoint();
+    if (point.respawns) this.#generatePoint();
   }
 
   #generatePoints(amount) {
@@ -506,6 +510,7 @@ class GameServer extends EventEmitter {
     const pointEntity = new Point(position.x, position.y, {
       size,
       color: getRandomColor(),
+      respawns: !(x && y),
     });
     this.points.set(pointEntity.id, pointEntity);
     this.allEntities.set(pointEntity.id, pointEntity);
@@ -573,7 +578,7 @@ class GameServer extends EventEmitter {
       tickRate: c.TICK_RATE,
       speed: { normal: c.NORMAL_SPEED, boost: c.BOOST_SPEED },
       maxTurnPerTick: MAX_ROTATION_SPEED,
-      boostCost: { points: 1, everyTicks: BOOST_COST_TICKS },
+      boostCost: { points: BOOST_COST_POINTS, everyTicks: BOOST_COST_TICKS },
       fogRadius: { min: c.FOG_RADIUS_MIN, max: c.FOG_RADIUS_MAX },
       pointsOnMap: this.points.size,
       players: {

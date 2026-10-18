@@ -5,3 +5,4 @@ dist/
 output.css
 __pycache__/
 .pytest_cache/
+checkpoints/

@@ -5,6 +5,7 @@ class Point extends Entity {
     super(x, y, options);
     this.size = options.size || 10;
     this.color = options.color || '#ffffff';
+    this.respawns = options.respawns ?? true;
   }
 }
 

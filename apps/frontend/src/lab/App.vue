@@ -110,6 +110,7 @@ const copyKey = async () => {
 const run = computed(() => runs.value.find((r) => r.id === runId.value));
 const liveRun = computed(() => live.value.runs.find((r) => r.runId === runId.value));
 const isLive = (id) => live.value.runs.some((r) => r.runId === id);
+const serverUrl = (port) => `${location.protocol}//${location.hostname}:${port}`;
 const rows = computed(() => progress.value.filter((r) => r.episodes > 0));
 const metricNames = computed(() => [...new Set(progress.value.flatMap((r) => Object.keys(r.metrics)))].sort());
 
@@ -277,11 +278,11 @@ onUnmounted(() => clearInterval(timer));
           <article v-if="liveRun" class="card">
             <h2>Na żywo</h2>
             <table>
-              <thead><tr><th>Agent</th><th>Pokój</th><th>Stan</th><th>Wynik</th><th>Czas życia</th></tr></thead>
+              <thead><tr><th>Agent</th><th>Serwer</th><th>Stan</th><th>Wynik</th><th>Czas życia</th></tr></thead>
               <tbody>
                 <tr v-for="(agent, i) in liveRun.agents" :key="i">
                   <td>#{{ i + 1 }}</td>
-                  <td>{{ agent.room }}</td>
+                  <td><a :href="serverUrl(agent.room)" target="_blank" rel="noopener">{{ serverUrl(agent.room) }}</a></td>
                   <td>{{ agent.alive ? 'Żyje' : 'Czeka na respawn' }}</td>
                   <td>{{ number(agent.score) }}</td>
                   <td>{{ number(seconds(agent.ticks)) }} s</td>

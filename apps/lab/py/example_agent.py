@@ -4,7 +4,7 @@ import random
 import signal
 import threading
 
-from pixel_snake_lab import Game
+from pixel_snake_lab import Game, parse_ports
 
 TURNS = (-0.5, 0.0, 0.5)
 ACTIONS = [(turn, boost) for turn in TURNS for boost in (False, True)]
@@ -42,14 +42,6 @@ def play(url, run, episodes, label):
         print(f'{label} episode {episode}: return {episode_return:.1f}, steps {steps}', flush=True)
         game.respawn()
     game.close()
-
-
-def parse_ports(ports):
-    parsed = []
-    for part in ports.split(','):
-        first, _, last = part.partition('-')
-        parsed.extend(range(int(first), int(last or first) + 1))
-    return parsed
 
 
 def play_room(url, run, episodes, sessions):

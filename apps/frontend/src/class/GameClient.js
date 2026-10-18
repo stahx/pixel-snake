@@ -1215,15 +1215,25 @@ class GameClient {
   }
 
   #updateUI() {
-    let htmlString = '';
-    for (const [index, player] of this.leaderboard.entries()) {
-      htmlString += `<div><b>${index + 1}.</b> ${player.name || 'Brak'}: ${player.points}</div>`;
-    }
-    this.leaderboardContent.innerHTML = htmlString;
+    const cell = (className, text) => {
+      const span = document.createElement('span');
+      span.className = className;
+      span.textContent = text;
+      return span;
+    };
+    const meIndex = this.leaderboard.findIndex(
+      (player) => this.player && player.name === this.player.name && player.points === this.player.points,
+    );
+    this.leaderboardContent.replaceChildren(...this.leaderboard.map((player, index) => {
+      const row = document.createElement('div');
+      row.classList.toggle('me', index === meIndex);
+      row.append(cell('rank', `${index + 1}.`), cell('name', player.name || 'Brak'), cell('points', player.points));
+      return row;
+    }));
 
     if (this.player) {
-      this.playerPoints.innerHTML = this.player.points || 0;
-      this.name.innerHTML = this.player.name || 'Brak';
+      this.playerPoints.textContent = this.player.points || 0;
+      this.name.textContent = this.player.name || 'Brak';
     }
 
     this._uiDirty = false;

@@ -12,7 +12,7 @@ FIELD_NAMES = {'i': 'id', 't': 'type', 'x': 'x', 'y': 'y', 'c': 'color', 's': 's
 AIM_DISTANCE = 200
 
 
-def load_env(path=os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')):
+def load_env(path=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.env')):
     if not os.path.exists(path):
         return
     with open(path) as file:
@@ -20,6 +20,14 @@ def load_env(path=os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env
             name, equals, value = line.strip().partition('=')
             if equals and not name.startswith('#'):
                 os.environ.setdefault(name.strip(), value.strip().strip('\'"'))
+
+
+def parse_ports(ports):
+    parsed = []
+    for part in ports.split(','):
+        first, _, last = part.partition('-')
+        parsed.extend(range(int(first), int(last or first) + 1))
+    return parsed
 
 
 def rename_fields(wire_entity):

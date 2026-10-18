@@ -1,6 +1,6 @@
 import os
 
-from pixel_snake_lab import apply_update, load_env
+from pixel_snake_lab import apply_update, load_env, parse_ports
 
 
 def test_load_env(tmp_path, monkeypatch):
@@ -33,3 +33,9 @@ def test_apply_update():
         2: {'id': 2, 'type': 'point', 'x': 50, 'y': 60, 'color': '#000', 'size': 16},
     }
     assert before_change[1]['x'] == 10
+
+
+def test_parse_ports():
+    assert parse_ports('3030') == [3030]
+    assert parse_ports('3031-3034') == [3031, 3032, 3033, 3034]
+    assert parse_ports('3030,3035-3036') == [3030, 3035, 3036]

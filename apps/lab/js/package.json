@@ -1,0 +1,13 @@
+{
+  "name": "@pixel-snake/lab-js",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "ppo": "node ppo-agent.js",
+    "test": "node --test *.test.js"
+  },
+  "dependencies": {
+    "@tensorflow/tfjs": "^4.22.0",
+    "socket.io-client": "^4.8.1"
+  }
+}

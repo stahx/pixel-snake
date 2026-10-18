@@ -2,6 +2,7 @@ import { beforeEach, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import GameServer from './GameServer.js';
+import Point from './Point.js';
 import Tail from './Tail.js';
 
 const CONFIG = {
@@ -78,9 +79,52 @@ describe('class/GameServer', () => {
     assert.ok(sent.some((m) => m.to === 'agent-1' && m.event === 'ded'));
     assert.deepEqual(episodes, [{ agent: AGENT, score: 7, maxScore: 9, ticks: 2, eaten: 0, boostSpent: 0, cause: 'bot' }]);
 
+    const dropped = [...game.points.values()].filter((point) => !point.respawns);
+    assert.equal(dropped.length, 5);
+    assert.ok(dropped.every((point) => point.size === 8));
+
     socket.handlers['player-join']({ name: 'renamed' });
     assert.equal(game.players.get('agent-1').name, 'ppo-run-1');
     assert.equal(game.players.get('agent-1').agent, AGENT);
+  });
+
+  test('step (eating)', () => {
+    game.connect(fakeSocket('agent-1'), AGENT);
+    game.step();
+    const agent = game.players.get('agent-1');
+    const placePoint = (respawns) => {
+      const point = new Point(agent.x, agent.y, { size: 8, respawns });
+      game.points.set(point.id, point);
+      game.allEntities.set(point.id, point);
+    };
+
+    placePoint(false);
+    const before = game.points.size;
+    game.step();
+    assert.equal(agent.points, 1);
+    assert.equal(game.points.size, before - 1);
+
+    placePoint(true);
+    game.step();
+    assert.equal(agent.points, 2);
+    assert.equal(game.points.size, before);
+  });
+
+  test('step (boost)', () => {
+    const socket = fakeSocket('agent-1');
+    game.connect(socket, AGENT);
+    const agent = game.players.get('agent-1');
+    agent.points = 10;
+    for (let tick = 0; tick < 30; tick++) game.step();
+    socket.handlers['player-speed'](true);
+    const dropsBefore = [...game.points.values()].filter((point) => !point.respawns).length;
+    for (let tick = 0; tick < 10; tick++) game.step();
+
+    const drops = [...game.points.values()].filter((point) => !point.respawns);
+    assert.equal(agent.points, 8);
+    assert.equal(agent.boostSpent, 2);
+    assert.equal(drops.length - dropsBefore, 1);
+    assert.equal(drops.at(-1).size, 8);
   });
 
   test('disconnect', () => {

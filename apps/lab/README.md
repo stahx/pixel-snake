@@ -1,7 +1,8 @@
 # Pixel Snake RL lab
 
-Write a training algorithm in Python that plays the live game on the running
-server. The agent joins as a normal snake, sees only what a player sees (fog of
+Write a training algorithm in Python (`py/`) or JavaScript (`js/`) that plays
+the live game on the running server. Both folders hold the same SDK and the
+same PPO trainer, so one can be read against the other. The agent joins as a normal snake, sees only what a player sees (fog of
 war), and acts through the same events as the browser client. Learning happens
 online inside your trainer; the server only keeps progress for the lab panel.
 
@@ -12,10 +13,26 @@ Lab setup on the server is in the root README. Create a key in the panel
 
 ```sh
 cd apps/lab
-pip install -r requirements.txt   # or: uv pip install -r requirements.txt
 cp .env.example .env              # paste the key after PIXEL_SNAKE_LAB_KEY=
-python example_agent.py
+
+# Python
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r py/requirements.txt
+python py/example_agent.py
+
+# JavaScript (from the repo root: pnpm install)
+node js/ppo-agent.js
 ```
+
+`apps/lab/.env` is read by both SDKs; a variable already set in the shell wins.
+
+| Python (`py/`) | JavaScript (`js/`) |
+| --- | --- |
+| `pixel_snake_lab.py`: `Game(url, run, key)` | `pixel-snake-lab.js`: `await Game.connect({ url, run, key })` |
+| `game.observe()` blocks | `await game.observe()` |
+| `game.log(loss=0.1)` | `game.log({ loss: 0.1 })` |
+| `example_agent.py`: random baseline | — |
+| `ppo_agent.py`: PPO in PyTorch | `ppo-agent.js`: PPO in TensorFlow.js |
 
 ## How the agent connects
 
@@ -117,10 +134,10 @@ connections.
 training session:
 
 ```sh
-python example_agent.py                                  # 1 session on :3030
-python example_agent.py --sessions 5                     # 5 sessions on :3030
-python example_agent.py --ports 3031-3050 --sessions 5   # 5 sessions on each of 20 rooms
-python example_agent.py --ports 3030,3035-3036           # a list of servers
+python py/example_agent.py                                  # 1 session on :3030
+python py/example_agent.py --sessions 5                     # 5 sessions on :3030
+python py/example_agent.py --ports 3031-3050 --sessions 5   # 5 sessions on each of 20 rooms
+python py/example_agent.py --ports 3030,3035-3036           # a list of servers
 ```
 
 Start the rooms first (`pnpm lab:rooms 20`, root README). Other flags:
@@ -128,6 +145,37 @@ Start the rooms first (`pnpm lab:rooms 20`, root README). Other flags:
 room. All sessions with one key and run name form one run; put the room in
 the name (`--run ppo-1:r3`) to compare rooms. Threads share one CPU core per
 process because of the GIL, so keep sessions per server in the tens.
+
+## PPO trainer
+
+`py/ppo_agent.py` and `js/ppo-agent.js` train one actor-critic network
+shared by every session:
+
+```sh
+python py/ppo_agent.py --ports 3031-3050 --sessions 5 --run ppo-1
+python py/ppo_agent.py --ports 3031-3050 --sessions 5 --run ppo-1 --resume py/checkpoints/ppo-1/latest.pt
+node js/ppo-agent.js --ports 3031-3050 --sessions 5 --run ppo-js-1
+node js/ppo-agent.js --ports 3031-3050 --sessions 5 --run ppo-js-1 --resume js/checkpoints/ppo-js-1/latest.json
+```
+
+- Features (19 numbers): the 3 nearest points (ahead/side distance relative
+  to the heading), danger in 8 sectors around the head (other snakes' tails
+  and heads; your own tail is harmless), log of points, boost flag.
+- Network: 19 → 64 → 64 (tanh), a policy head with 6 action scores
+  (turn left/straight/right × boost) and a value head.
+- Reward: change in points per decision, −10 on death. One decision every
+  4 ticks.
+- Every 4096 steps the learner runs PPO (4 epochs, minibatches of 512, clip
+  0.2, GAE λ 0.95) and sends `loss/policy`, `loss/value`, `entropy` and
+  `update` to the panel with the next episode's `reward` and `steps`.
+- Checkpoints (weights + optimizer state) go to `<py|js>/checkpoints/<run>/`
+  every 10 updates and on Ctrl+C; `--resume` continues from one.
+
+Python runs one process per server and shares the weights through shared
+memory (`torch.multiprocessing`); the learner updates them while actors play.
+JavaScript runs every session in one Node process and the learner blocks the
+event loop for the update; it stays simple but slows down past a few dozen
+sessions. Install `@tensorflow/tfjs-node` for native speed.
 
 ## What the lab records
 
@@ -137,10 +185,11 @@ points eaten, points spent on boost, cause: `bot`, `human`, `agent` or
 plus one when the run's last agent disconnects. Your algorithm adds its own
 numbers with `game.log(**metrics)`: up to 32 finite numbers per call, names
 matching `[A-Za-z0-9_./-]{1,40}`, averaged over the same window and drawn as
-separate charts in the panel. Invalid calls come back as a Python warning.
+separate charts in the panel. Invalid calls come back as a warning.
 
 ## Tests
 
 ```sh
-pytest -p no:cacheprovider
+cd py && pytest -p no:cacheprovider
+pnpm --filter @pixel-snake/lab-js test
 ```
