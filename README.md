@@ -90,6 +90,12 @@ database, so the panel on any port shows every run and every live session,
 whichever room it plays in. Revoking a key disconnects its sessions in all
 rooms within a few seconds.
 
+`pnpm lab:rooms 20 1.5` runs the rooms at 1.5 times the tick rate (`TIMESCALE`).
+The game and its bots count time in ticks, so it is the same game played
+faster: agents collect experience sooner and play the same at normal speed. It
+helps while the machine has CPU to spare; past that, rooms and trainer sessions
+fall behind. The panel's Pokoje tab starts and stops the rooms too.
+
 On a public deployment serve the game over HTTPS/WSS: the lab key travels
 in the Socket.IO handshake and the panel session in a cookie. Keys are
 stored as SHA-256 hashes and can be revoked from the panel, which also

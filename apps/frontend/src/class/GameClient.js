@@ -27,6 +27,9 @@ class GameClient {
     this.lastUpdateTime = performance.now();
 
     this.player = null;
+    this.followId = new URLSearchParams(location.search).get('follow');
+    if (this.followId) this.menu.style.display = 'none';
+    this.followed = null;
     this._uiDirty = false;
 
     this.canvas.width = window.innerWidth;
@@ -481,6 +484,9 @@ class GameClient {
           if (entity.type === 'player' && entity.playerId == this.socket.id) {
             this.player = entity;
           }
+          if (entity.type === 'player' && entity.playerId === this.followId) {
+            this.followed = entity;
+          }
         }
       }
 
@@ -553,7 +559,7 @@ class GameClient {
 
           if (upd.x !== undefined) entity.x = upd.x;
           if (upd.y !== undefined) entity.y = upd.y;
-          if (upd.s !== undefined && entity.type !== 'tail') entity.size = upd.s;
+          if (upd.s !== undefined) entity.size = upd.s;
           if (upd.a !== undefined) entity.angle = upd.a;
 
           if (upd.b !== undefined) entity._remoteBoosting = !!upd.b;
@@ -571,6 +577,9 @@ class GameClient {
         for (const id of data.r) {
           if (this.player && id === this.player.id) {
             this.player = null;
+          }
+          if (this.followed && id === this.followed.id) {
+            this.followed = null;
           }
           this.entityMap.delete(id);
           this.prevPositions.delete(id);
@@ -610,7 +619,7 @@ class GameClient {
       (performance.now() - this.lastUpdateTime) / SERVER_TICK_MS,
     );
 
-    if (!this.player) {
+    if (!this.player && !this.followId) {
       this.spectatorX += this.spectatorDX;
       this.spectatorY += this.spectatorDY;
       if (this.spectatorX < 500 || this.spectatorX > this.worldWidth - 500)
@@ -787,7 +796,7 @@ class GameClient {
   #getRenderPos(entity, alpha) {
     if (entity.type === 'tail') {
       const owner = this.#findPlayerByPlayerId(entity.playerId);
-      const osize = owner ? this.#getRenderPos(owner, alpha).size : 10;
+      const osize = owner ? this.#getRenderPos(owner, alpha).size : (entity.size ?? 10);
       const prev = this.prevPositions.get(entity.id);
       const target = this.targetPositions.get(entity.id);
       if (!prev || !target) {
@@ -1051,8 +1060,11 @@ class GameClient {
     const playerPositions = new Map();
     const labelInfos = [];
     const labeledPlayerIds = new Set();
+    const watched = this.followId ? this.followed : null;
+    const visionRadius = watched ? this.#getVisionRadius(watched.size || 10) : 0;
 
     for (const entity of this.entityMap.values()) {
+      if (watched && this.#torusDistSq(watched.x, watched.y, entity.x, entity.y) > visionRadius * visionRadius) continue;
       if (entity.type === 'point') {
         const pos = this.#getRenderPos(entity, alpha);
         this.#forEachTorusCopy(pos.x, pos.y, pos.size, camX, camY, camR, camB, (x, y) => {
@@ -1074,7 +1086,7 @@ class GameClient {
         const pid = entity.playerId;
         if (!snakeTails.has(pid)) snakeTails.set(pid, []);
         const pos = this.#getRenderPos(entity, alpha);
-        snakeTails.get(pid).push({ id: entity.id, x: pos.x, y: pos.y, size: pos.size });
+        snakeTails.get(pid).push({ id: entity.id, x: pos.x, y: pos.y, size: pos.size, color: entity.color });
         continue;
       }
 
@@ -1091,12 +1103,7 @@ class GameClient {
       const playerEntity = playerEntities.get(playerId);
       const headPos = playerPositions.get(playerId);
       if (!playerEntity || !headPos) {
-        for (const seg of tails) {
-          this.#forEachTorusCopy(seg.x, seg.y, seg.size, camX, camY, camR, camB, (x, y) => {
-            this.ctx.fillStyle = '#888888';
-            this.ctx.fillRect(x, y, seg.size, seg.size);
-          });
-        }
+        this.#drawSnakeBody(tails, tails[0].color, tails[0].size, camX, camY, camR, camB);
         continue;
       }
 
@@ -1158,8 +1165,25 @@ class GameClient {
 
     this.#drawBoostParticles(camX, camY, camR, camB);
 
+    if (watched) {
+      const head = this.#getRenderPos(watched, alpha);
+      this.ctx.beginPath();
+      this.ctx.rect(camX, camY, camR - camX, camB - camY);
+      this.ctx.arc(head.x + head.size / 2, head.y + head.size / 2, visionRadius, 0, Math.PI * 2, true);
+      this.ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+      this.ctx.fill('evenodd');
+    }
+
     this.ctx.restore();
     this.#drawMinimap();
+  }
+
+  #torusDistSq(px, py, ex, ey) {
+    const dx = Math.abs(ex - px) % this.worldWidth;
+    const dy = Math.abs(ey - py) % this.worldHeight;
+    const wrappedX = Math.min(dx, this.worldWidth - dx);
+    const wrappedY = Math.min(dy, this.worldHeight - dy);
+    return wrappedX * wrappedX + wrappedY * wrappedY;
   }
 
   // Keep in sync with GameServer.js#getFogRadius -- vision grows with snake size
@@ -1188,8 +1212,9 @@ class GameClient {
   }
 
   #updateZoom() {
-    if (this.player) {
-      const visionRadius = this.#getVisionRadius(this.player.size || 10);
+    const target = this.player || this.followed;
+    if (target) {
+      const visionRadius = this.#getVisionRadius(target.size || 10);
       this._targetZoom = this.#getTargetZoom(visionRadius);
     } else {
       this._targetZoom = 1;
@@ -1201,10 +1226,13 @@ class GameClient {
     this.#updateZoom();
 
     let camX, camY;
-    if (this.player) {
-      const pos = this.#getRenderPos(this.player, alpha);
+    const target = this.player || this.followed;
+    if (target) {
+      const pos = this.#getRenderPos(target, alpha);
       camX = pos.x;
       camY = pos.y;
+      this.spectatorX = camX;
+      this.spectatorY = camY;
     } else {
       camX = this.spectatorX;
       camY = this.spectatorY;

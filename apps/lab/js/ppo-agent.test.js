@@ -1,7 +1,7 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { DANGER_SECTORS, FOOD_SLOTS, VIEW_DISTANCE, advantages, features } from './ppo-agent.js';
+import { DANGER_SECTORS, FOOD_SLOTS, VIEW_DISTANCE, advantages, features, rewardFor } from './ppo-agent.js';
 
 const INFO = { map: { width: 4000, height: 4000 } };
 const close = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-9, `${actual} != ${expected}`);
@@ -36,5 +36,13 @@ describe('lab/ppo-agent', () => {
     close(advantage[0], first);
     close(advantage[1], last);
     close(returns[0], first + 0.5);
+  });
+
+  test('rewardFor', () => {
+    const alive = { alive: true, me: { points: 120 }, kills: 2, killPoints: 40 };
+
+    assert.equal(rewardFor(alive, { alive: true, me: { points: 123 }, kills: 2, killPoints: 40 }), 3);
+    assert.equal(rewardFor(alive, { alive: true, me: { points: 123 }, kills: 3, killPoints: 100 }), 63);
+    assert.equal(rewardFor(alive, { alive: false, me: null, kills: 2, killPoints: 40 }), -170);
   });
 });

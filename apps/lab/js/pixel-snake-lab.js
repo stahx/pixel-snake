@@ -63,6 +63,8 @@ export class Game {
   leaderboard = [];
   alive = false;
   tick = 0;
+  kills = 0;
+  killPoints = 0;
   #disconnected = false;
   #waiters = new Set();
 
@@ -84,6 +86,10 @@ export class Game {
       this.entities.clear();
       this.#changed();
     });
+    socket.on('kill', ({ points }) => {
+      this.kills++;
+      this.killPoints += points;
+    });
     socket.on('lab-error', (message) => console.warn(`lab: ${message}`));
     socket.on('disconnect', () => {
       this.#disconnected = true;
@@ -103,7 +109,7 @@ export class Game {
     const tick = this.tick;
     await this.#waitFor(() => this.tick !== tick || !this.alive, timeout);
     if (this.#disconnected) throw new Error('Disconnected from the lab server');
-    return { tick: this.tick, alive: this.alive, me: this.me, entities: new Map(this.entities), leaderboard: this.leaderboard };
+    return { tick: this.tick, alive: this.alive, me: this.me, kills: this.kills, killPoints: this.killPoints, entities: new Map(this.entities), leaderboard: this.leaderboard };
   }
 
   aim(x, y) {

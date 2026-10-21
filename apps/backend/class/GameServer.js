@@ -11,12 +11,22 @@ import {
   getRandomSize,
   getRandomColor,
   calculatePlayerNewSize,
+  maxTailSegments,
+  maxTurn,
+  speedFactor,
+  BIG_SLOWDOWN,
+  GROWTH_CAP_POINTS,
+  MAX_SIZE,
+  MAX_TAIL_SEGMENTS,
+  SPAWN_SIZE,
+  TURN_RADIUS_PER_SIZE,
 } from '../helpers/index.js';
 
 const GRID_CELL_SIZE = 100;
 const MAX_ROTATION_SPEED = 0.08; // radians per tick - lower = slower turning
-const BOOST_COST_TICKS = 10;
-const BOOST_COST_POINTS = 2;
+const BOOST_COST_TICKS = 15;
+const BOOST_COST_POINTS = 1;
+const BOOST_POINTS_PER_DROP = 2;
 const DROPPED_POINT_SIZE = 8;
 const DEATH_POINTS_KEPT = 0.7;
 
@@ -121,8 +131,15 @@ class GameServer extends EventEmitter {
   }
 
   start() {
-    setInterval(() => this.step(), 1000 / this.config.TICK_RATE);
+    const period = 1000 / (this.config.TICK_RATE * this.config.TIMESCALE);
+    let due = Date.now();
+    const loop = () => {
+      this.step();
+      due = Math.max(due + period, Date.now() - period);
+      setTimeout(loop, due - Date.now());
+    };
     this.running = true;
+    loop();
   }
 
   #joinPlayer(socket, name) {
@@ -211,10 +228,11 @@ class GameServer extends EventEmitter {
       while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
 
       // Limit rotation speed
-      if (angleDiff > MAX_ROTATION_SPEED) {
-        angleDiff = MAX_ROTATION_SPEED;
-      } else if (angleDiff < -MAX_ROTATION_SPEED) {
-        angleDiff = -MAX_ROTATION_SPEED;
+      const turnLimit = maxTurn(this.#moveSpeed(player), player.size, MAX_ROTATION_SPEED);
+      if (angleDiff > turnLimit) {
+        angleDiff = turnLimit;
+      } else if (angleDiff < -turnLimit) {
+        angleDiff = -turnLimit;
       }
 
       // Apply limited rotation
@@ -239,7 +257,7 @@ class GameServer extends EventEmitter {
           player.points -= spent;
           player.boostSpent += spent;
           const tailArr = this.tails.get(player.playerId);
-          if (tailArr && tailArr.length > 0) {
+          if (spent && player.boostSpent % BOOST_POINTS_PER_DROP === 0 && tailArr && tailArr.length > 0) {
             const shed = tailArr.shift();
             this.allEntities.delete(shed.id);
             this.#generatePoint(shed.x, shed.y, DROPPED_POINT_SIZE);
@@ -249,12 +267,9 @@ class GameServer extends EventEmitter {
         player._boostTick = 0;
       }
 
-      const moveX = player.speed
-        ? player.diffX * this.config.BOOST_SPEED
-        : player.diffX * this.config.NORMAL_SPEED;
-      const moveY = player.speed
-        ? player.diffY * this.config.BOOST_SPEED
-        : player.diffY * this.config.NORMAL_SPEED;
+      const moveSpeed = this.#moveSpeed(player);
+      const moveX = player.diffX * moveSpeed;
+      const moveY = player.diffY * moveSpeed;
 
       player.x += moveX;
       player.y += moveY;
@@ -271,7 +286,7 @@ class GameServer extends EventEmitter {
       player.tailCounter++;
 
       const tailEntities = this.#getTailEntities(player.playerId);
-      const tailLimit = tailEntities.length > player.points * 2;
+      const tailLimit = tailEntities.length > maxTailSegments(player.points);
       const shouldAddTail = player.tailCounter % 5 === 0;
 
       if (pointDist > 0 && !tailLimit && shouldAddTail) {
@@ -298,6 +313,10 @@ class GameServer extends EventEmitter {
     this.botManager.tick();
 
     this.#emitUpdate();
+  }
+
+  #moveSpeed(player) {
+    return (player.speed ? this.config.BOOST_SPEED : this.config.NORMAL_SPEED) * speedFactor(player.points);
   }
 
   #rebuildGrid() {
@@ -397,6 +416,8 @@ class GameServer extends EventEmitter {
       const seg = allSegments[Math.min(idx, count - 1)];
       this.#generatePoint(seg.x, seg.y, DROPPED_POINT_SIZE);
     }
+
+    if (killer.agent) this.sockets.get(killer.playerId).emit('kill', { points: player.points });
 
     if (this.botManager.isBot(player.playerId)) {
       this.botManager.remove(player.playerId);
@@ -557,16 +578,10 @@ class GameServer extends EventEmitter {
   }
 
   #getFogRadius(player) {
-    // Vision grows with snake size: SPAWN_SIZE matches Player.js's default spawn
-    // size, GROWTH_CAP_SIZE matches the size calculatePlayerNewSize stops growing
-    // past (helpers/gameServer.js). Below spawn size (shouldn't normally happen)
-    // or above the cap, radius clamps to FOG_RADIUS_MIN / FOG_RADIUS_MAX.
-    const SPAWN_SIZE = 10;
-    const GROWTH_CAP_SIZE = 100;
     const { FOG_RADIUS_MIN, FOG_RADIUS_MAX } = this.config;
     const t = Math.min(
       1,
-      Math.max(0, (player.size - SPAWN_SIZE) / (GROWTH_CAP_SIZE - SPAWN_SIZE)),
+      Math.max(0, (player.size - SPAWN_SIZE) / (MAX_SIZE - SPAWN_SIZE)),
     );
     return FOG_RADIUS_MIN + (FOG_RADIUS_MAX - FOG_RADIUS_MIN) * t;
   }
@@ -578,6 +593,14 @@ class GameServer extends EventEmitter {
       tickRate: c.TICK_RATE,
       speed: { normal: c.NORMAL_SPEED, boost: c.BOOST_SPEED },
       maxTurnPerTick: MAX_ROTATION_SPEED,
+      growth: {
+        capPoints: GROWTH_CAP_POINTS,
+        spawnSize: SPAWN_SIZE,
+        maxSize: MAX_SIZE,
+        maxTailSegments: MAX_TAIL_SEGMENTS,
+        slowdown: BIG_SLOWDOWN,
+        turnRadiusPerSize: TURN_RADIUS_PER_SIZE,
+      },
       boostCost: { points: BOOST_COST_POINTS, everyTicks: BOOST_COST_TICKS },
       fogRadius: { min: c.FOG_RADIUS_MIN, max: c.FOG_RADIUS_MAX },
       pointsOnMap: this.points.size,
@@ -613,10 +636,8 @@ class GameServer extends EventEmitter {
       x: Math.round(e.x),
       y: Math.round(e.y),
       c: e.color,
+      s: this.#roundedSize(e),
     };
-    if (e.type !== 'tail') {
-      base.s = Math.round(e.size);
-    }
     if (e.type === 'player') {
       base.p = e.playerId;
       base.n = e.name;
@@ -627,6 +648,10 @@ class GameServer extends EventEmitter {
       base.p = e.playerId;
     }
     return base;
+  }
+
+  #roundedSize(entity) {
+    return Math.round(entity.type === 'tail' ? this.players.get(entity.playerId).size : entity.size);
   }
 
   #emitUpdate() {
@@ -674,8 +699,9 @@ class GameServer extends EventEmitter {
           const rx = Math.round(entity.x);
           const ry = Math.round(entity.y);
           if (entity.type === 'tail') {
-            if (prev.x !== rx || prev.y !== ry) {
-              updated.push({ i: entity.id, x: rx, y: ry });
+            const rs = this.#roundedSize(entity);
+            if (prev.x !== rx || prev.y !== ry || prev.s !== rs) {
+              updated.push({ i: entity.id, x: rx, y: ry, s: rs });
             }
           } else {
             const rs = Math.round(entity.size);
@@ -712,7 +738,7 @@ class GameServer extends EventEmitter {
           newPrevMap.set(id, {
             x: Math.round(entity.x),
             y: Math.round(entity.y),
-            s: 0,
+            s: this.#roundedSize(entity),
             pt: entity.points,
           });
         } else {
@@ -758,8 +784,9 @@ class GameServer extends EventEmitter {
           const rx = Math.round(entity.x);
           const ry = Math.round(entity.y);
           if (entity.type === 'tail') {
-            if (prev.x !== rx || prev.y !== ry) {
-              updated.push({ i: entity.id, x: rx, y: ry });
+            const rs = this.#roundedSize(entity);
+            if (prev.x !== rx || prev.y !== ry || prev.s !== rs) {
+              updated.push({ i: entity.id, x: rx, y: ry, s: rs });
             }
           } else {
             const rs = Math.round(entity.size);
@@ -796,7 +823,7 @@ class GameServer extends EventEmitter {
           newPrevMap.set(id, {
             x: Math.round(entity.x),
             y: Math.round(entity.y),
-            s: 0,
+            s: this.#roundedSize(entity),
             pt: entity.points,
           });
         } else {

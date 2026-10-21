@@ -91,7 +91,7 @@ describe('lab/agents', () => {
       {
         runId: RUN_ID,
         name: 'ppo-run-1',
-        agents: [{ room: '3031', alive: true, score: 3, ticks: 60 }, { room: '3032', alive: false, score: 0, ticks: 0 }],
+        agents: [{ id: 'agent-1', room: '3031', alive: true, score: 3, ticks: 60 }, { room: '3032', alive: false, score: 0, ticks: 0 }],
         pending: { episodes: 3, scoreMax: 12 },
       },
       { runId: 'run-2', name: 'dqn', agents: [{ room: '3032', alive: true, score: 1, ticks: 5 }], pending: { episodes: 0, scoreMax: null } },

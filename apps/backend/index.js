@@ -33,8 +33,9 @@ const gameConfig = {
   MAP_HEIGHT: 4000,
   POINTS_AMOUNT: 400,
   NORMAL_SPEED: 1.3,
-  BOOST_SPEED: 2.3,
+  BOOST_SPEED: 2.8,
   TICK_RATE: 60,
+  TIMESCALE: Number(process.env.TIMESCALE) || 1,
   // Vision radius scales with snake size (see Player.js spawn size / calculatePlayerNewSize
   // growth cap): small at spawn, growing toward FOG_RADIUS_MAX as the snake grows.
   FOG_RADIUS_MIN: 300,
@@ -45,8 +46,9 @@ const gameConfig = {
 const game = new GameServer(io, gameConfig);
 game.start();
 
-const lab = attachLab({ io, game, pool, flushMinutes: Number(process.env.LAB_FLUSH_MINUTES) || 5, room: port });
-app.use('/api/lab', labRouter({ pool, lab, password: process.env.LAB_ADMIN_PASSWORD }));
+const flushMinutes = Number(process.env.LAB_FLUSH_MINUTES) || 5;
+const lab = attachLab({ io, game, pool, flushMinutes, room: port });
+app.use('/api/lab', labRouter({ pool, lab, password: process.env.LAB_ADMIN_PASSWORD, flushMinutes }));
 
 app.get('/version', (req, res) => {
   return res.json({ version: rootPkg.version });

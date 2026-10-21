@@ -1,6 +1,9 @@
 import os
 
-from pixel_snake_lab import apply_update, load_env, parse_ports
+import pytest
+import socketio
+
+from pixel_snake_lab import Game, apply_update, load_env, parse_ports, split_lines
 
 
 def test_load_env(tmp_path, monkeypatch):
@@ -39,3 +42,18 @@ def test_parse_ports():
     assert parse_ports('3030') == [3030]
     assert parse_ports('3031-3034') == [3031, 3032, 3033, 3034]
     assert parse_ports('3030,3035-3036') == [3030, 3035, 3036]
+
+
+def test_split_lines():
+    assert split_lines(b'', b'update 1\nupd') == (['update 1'], b'upd')
+    assert split_lines(b'upd', b'ate 2\r\n\n') == (['update 2', ''], b'')
+    assert split_lines(b'', 'zażółć\n'.encode()[:3]) == ([], 'zażółć'.encode()[:3])
+    assert split_lines(b'', b'x' * 1500 + b'\n') == (['x' * 1000], b'')
+
+
+def test_game_emit():
+    game = Game.__new__(Game)
+    game._sio = socketio.Client()
+
+    with pytest.raises(ConnectionError):
+        game.boost(True)

@@ -46,7 +46,7 @@ export default class BotManager {
   tick() {
     const W = this.game.config.MAP_WIDTH;
     const H = this.game.config.MAP_HEIGHT;
-    const now = Date.now();
+    const now = this.game.tick * 1000 / this.game.config.TICK_RATE;
 
     for (const botId of this.bots) {
       const player = this.game.players.get(botId);

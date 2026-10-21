@@ -59,7 +59,8 @@ to fetch it again):
 | `map.width`, `map.height`, `map.wraps` | World size; edges wrap around (torus) |
 | `tickRate` | Server ticks per second (60) |
 | `speed.normal`, `speed.boost` | Pixels moved per tick |
-| `maxTurnPerTick` | Max heading change per tick, radians |
+| `maxTurnPerTick` | Max heading change per tick for a small snake, radians |
+| `growth` | Growth factor `min(1, points / capPoints)` drives size (from `spawnSize` up to `maxSize`), tail length (up to `maxTailSegments`), speed (down to `1 - slowdown`) and turning radius (`turnRadiusPerSize` × size) |
 | `boostCost` | Boost costs `points` every `everyTicks` ticks |
 | `fogRadius.min/max` | View radius, grows with snake size |
 | `pointsOnMap`, `players.total/bots/clients` | Current population |
@@ -72,6 +73,8 @@ to fetch it again):
   'tick': 1234,              # client-side counter of received updates
   'alive': True,
   'me': {...},               # your player entity, None when dead
+  'kills': 3,                # snakes that died on your tail since connecting
+  'kill_points': 250,        # their points summed
   'entities': {id: {...}},   # everything inside your fog radius
   'leaderboard': [{'name': ..., 'points': ...}],
 }
@@ -153,26 +156,93 @@ shared by every session:
 
 ```sh
 python py/ppo_agent.py --ports 3031-3050 --sessions 5 --run ppo-1
-python py/ppo_agent.py --ports 3031-3050 --sessions 5 --run ppo-1 --resume py/checkpoints/ppo-1/latest.pt
+python py/ppo_agent.py --ports 3031-3040:1,3041-3050:10 --run ppo-1   # quiet and crowded rooms
+python py/ppo_agent.py --ports 3031-3050 --sessions 5 --run ppo-2 --model py/checkpoints/ppo-1/update-800.pt
+python py/ppo_agent.py --ports 3030 --sessions 3 --run ppo-1 --play
 node js/ppo-agent.js --ports 3031-3050 --sessions 5 --run ppo-js-1
-node js/ppo-agent.js --ports 3031-3050 --sessions 5 --run ppo-js-1 --resume js/checkpoints/ppo-js-1/latest.json
 ```
 
-- Features (19 numbers): the 3 nearest points (ahead/side distance relative
-  to the heading), danger in 8 sectors around the head (other snakes' tails
-  and heads; your own tail is harmless), log of points, boost flag.
-- Network: 19 → 64 → 64 (tanh), a policy head with 6 action scores
-  (turn left/straight/right × boost) and a value head.
-- Reward: change in points per decision, −10 on death. One decision every
-  4 ticks.
-- Every 4096 steps the learner runs PPO (4 epochs, minibatches of 512, clip
-  0.2, GAE λ 0.95) and sends `loss/policy`, `loss/value`, `entropy` and
-  `update` to the panel with the next episode's `reward` and `steps`.
-- Checkpoints (weights + optimizer state) go to `<py|js>/checkpoints/<run>/`
-  every 10 updates and on Ctrl+C; `--resume` continues from one.
+A run name owns its model: starting a run whose `checkpoints/<run>/latest.*`
+exists continues that model. `--model` starts from a specific checkpoint
+instead (an older update, or another run's model); a new run name starts a
+new model. The lab panel only holds statistics, never weights.
 
-Python runs one process per server and shares the weights through shared
-memory (`torch.multiprocessing`); the learner updates them while actors play.
+The learner trains on the GPU when PyTorch finds one (`mps` on Apple silicon,
+CUDA), otherwise on the CPU; the log's `learning on …` line says which.
+
+### Parameters
+
+Rewards and PPO settings (`kill_reward`, `death_penalty`, `gamma`,
+`learning_rate`, `entropy_coef`, `batch_steps`, …; `--help` lists them with
+their defaults) live in `checkpoints/<run>/config.json`. On every start the
+trainer takes the file, applies the edits waiting in the lab panel (run →
+Parametry), then the command-line flags, writes the result back to the file and
+reports it to the panel:
+
+```sh
+python py/ppo_agent.py --ports 3031-3046 --sessions 5 --run slither-v6 --death-penalty -80 --gamma 0.995
+```
+
+Edits in the panel or the file apply on the trainer's next start (Ctrl+C and
+start it again); a running trainer keeps its parameters. The network layout
+(radar, actions, layers) is not a parameter: change it in a new run.
+
+### Logs
+
+Everything the trainer prints (the learner, every session, tracebacks) goes to
+the terminal as before and to the run's log in the panel (run → Logi trenera),
+which keeps the last 2000 lines per run. `--play` logs to `<run>-play`. Other
+trainers can do the same with `stream_output(url, run)` from the SDK.
+
+A new Python run copies the trainer into its folder as
+`checkpoints/<run>/trainer.py` (with `pixel_snake_lab.py`). Starting
+`py/ppo_agent.py --run <run>` later hands over to that copy, so every run keeps
+training and playing with the algorithm it started with, whatever
+`ppo_agent.py` has become since. `--play` runs the model without training and
+logs it to the panel as `<run>-play`.
+
+- Observation (Python): a 24×24 grid of 50 px cells around the head, rotated so
+  the heading points up, with layers for food (count, up to 5), enemy tails,
+  enemy heads, where each enemy head is going (cos and sin of its heading
+  relative to yours), whether it boosts and its size (log of its size over
+  yours), your own tail, and which cells are inside your fog radius (so unseen
+  is not mistaken for empty), plus log of points, boost flag, size and how many
+  ticks the last decision lasted. The fog radius grows from `fogRadius.min` at
+  `growth.spawnSize` to `fogRadius.max` at `growth.maxSize`.
+- Network (Python): two convolutions over the 9 layers (16 and 32 filters, stride 2) → 128 →
+  128 (tanh), a policy head with 10 action scores (5 turns from -0.32 to
+  0.32 rad × boost) and a value head. 0.32 rad is the most the server turns
+  in 4 ticks; big snakes turn less (turn radius).
+- The JavaScript trainer still uses the earlier 19-number observation (3
+  nearest points, danger in 8 sectors, log of points, boost flag) and a
+  19 → 64 → 64 network, with its parameters fixed in the code and no logs in
+  the panel.
+- Reward: change in points per decision; a kill (another snake hit your
+  tail) pays 30 plus half the victim's points; dying costs 50 plus every point
+  the snake had, so death stays the worst outcome and gets worse as the snake
+  grows. The learner sees rewards × 0.01; the panel's `reward` is unscaled. One
+  decision every 3-6 ticks, drawn for each life, so the model learns to cope
+  with lag. Each episode logs `kills` and `dropped_steps` to the panel.
+- Every 4096 steps the learner runs PPO (4 epochs, minibatches of 512, clip
+  0.2, GAE λ 0.95; defaults, see Parameters) and sends `loss/policy`,
+  `loss/value`, `entropy`, `entropy_pct` (percent of the most an action count
+  allows, comparable across runs), `approx_kl` (how far the update moved the
+  policy from the one that played the batch), `clip_frac` (share of steps the
+  clip cut off), `learner_busy_pct` (time spent training rather than waiting
+  for steps: low means room for more epochs) and `update` to the panel with the next episode's
+  `reward` and `steps`.
+- Checkpoints (weights + optimizer state) go to `<py|js>/checkpoints/<run>/`
+  every 10 updates and on Ctrl+C.
+
+Python runs a process for every five sessions of a server, since threads in one
+process take turns on its GIL; sessions play with weights in shared memory
+(`torch.multiprocessing`), which the learner refreshes after every update. A
+session whose server goes away (a room restarting) reconnects every 5 seconds
+and plays on, so the trainer outlives a restart of the rooms.
+The learner holds at most two batches of unread steps: when it falls behind,
+sessions drop new segments (`dropped_steps`) instead of queueing them, so it
+never trains on stale play. Many dropped steps mean too many sessions for this
+machine.
 JavaScript runs every session in one Node process and the learner blocks the
 event loop for the update; it stays simple but slows down past a few dozen
 sessions. Install `@tensorflow/tfjs-node` for native speed.

@@ -1,6 +1,7 @@
 services:
   postgres:
     image: postgres:17-alpine
+    command: postgres -c max_connections=500
     environment:
       POSTGRES_DB: pixel_snake
       POSTGRES_USER: pixel_snake

@@ -1,14 +1,18 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import * as tf from '@tensorflow/tfjs';
 
 import { Game, parsePorts } from './pixel-snake-lab.js';
 
-const TURNS = [-0.5, 0, 0.5];
-const ACTIONS = TURNS.flatMap((turn) => [[turn, false], [turn, true]]);
+const TURNS = [-0.32, -0.16, -0.05, 0, 0.05, 0.16, 0.32];
+const LEGACY_TURNS = [-0.5, 0, 0.5];
 const TICKS_PER_ACTION = 4;
-const DEATH_PENALTY = -10;
+const DEATH_PENALTY = -50;
+const KILL_REWARD = 30;
+const KILL_SHARE = 0.5;
+// Returns in the hundreds would make the value loss drown the policy gradient in the shared body.
+const REWARD_SCALE = 0.01;
 
 export const FOOD_SLOTS = 3;
 export const DANGER_SECTORS = 8;
@@ -36,21 +40,26 @@ const dense = (inputs, outputs, name) => ({
   bias: tf.variable(tf.zeros([outputs]), true, `${name}/bias`),
 });
 
-export function createActorCritic() {
+export function createActorCritic(turns = TURNS) {
+  const actions = turns.flatMap((turn) => [[turn, false], [turn, true]]);
   return {
-    hidden1: dense(FEATURE_COUNT, HIDDEN_SIZE, 'hidden1'),
-    hidden2: dense(HIDDEN_SIZE, HIDDEN_SIZE, 'hidden2'),
-    policy: dense(HIDDEN_SIZE, ACTIONS.length, 'policy'),
-    value: dense(HIDDEN_SIZE, 1, 'value'),
+    turns,
+    actions,
+    layers: {
+      hidden1: dense(FEATURE_COUNT, HIDDEN_SIZE, 'hidden1'),
+      hidden2: dense(HIDDEN_SIZE, HIDDEN_SIZE, 'hidden2'),
+      policy: dense(HIDDEN_SIZE, actions.length, 'policy'),
+      value: dense(HIDDEN_SIZE, 1, 'value'),
+    },
   };
 }
 
 const layer = (input, { weights, bias }) => input.matMul(weights).add(bias);
-const variablesOf = (net) => Object.values(net).flatMap(({ weights, bias }) => [weights, bias]);
+const variablesOf = (net) => Object.values(net.layers).flatMap(({ weights, bias }) => [weights, bias]);
 
-function forward(net, states) {
-  const hidden = layer(layer(states, net.hidden1).tanh(), net.hidden2).tanh();
-  return { logits: layer(hidden, net.policy), values: layer(hidden, net.value).squeeze([1]) };
+function forward({ layers }, states) {
+  const hidden = layer(layer(states, layers.hidden1).tanh(), layers.hidden2).tanh();
+  return { logits: layer(hidden, layers.policy), values: layer(hidden, layers.value).squeeze([1]) };
 }
 
 const wrapped = (delta, size) => ((delta + size / 2) % size + size) % size - size / 2;
@@ -89,9 +98,9 @@ export function features(observation, info) {
   return [...foodFeatures, ...danger, ...own].map((value) => Math.min(5, Math.max(-5, value)));
 }
 
-const rewardFor = (observation, nextObservation) => (nextObservation.alive
-  ? nextObservation.me.points - observation.me.points
-  : DEATH_PENALTY);
+export const rewardFor = (observation, nextObservation) => KILL_REWARD * (nextObservation.kills - observation.kills)
+  + KILL_SHARE * (nextObservation.killPoints - observation.killPoints)
+  + (nextObservation.alive ? nextObservation.me.points - observation.me.points : DEATH_PENALTY - observation.me.points);
 
 export function advantages(rewards, values, dones, lastValue) {
   const advantage = new Array(rewards.length);
@@ -127,7 +136,7 @@ function shuffled(count) {
 function ppoLoss(net, batch) {
   const { logits, values } = forward(net, batch.states);
   const logProbsAll = tf.logSoftmax(logits);
-  const logProbs = logProbsAll.mul(tf.oneHot(batch.actions, ACTIONS.length)).sum(1);
+  const logProbs = logProbsAll.mul(tf.oneHot(batch.actions, net.actions.length)).sum(1);
   const ratio = logProbs.sub(batch.logProbs).exp();
   const policyLoss = tf.minimum(
     ratio.mul(batch.advantages),
@@ -199,6 +208,7 @@ async function save(net, optimizer, update, folder) {
   ));
   const checkpoint = JSON.stringify({
     update,
+    turns: net.turns,
     model: await tensorsToJson(variablesOf(net).map((variable) => ({ name: variable.name, tensor: variable }))),
     optimizer: await tensorsToJson(await optimizer.getWeights()),
   });
@@ -206,8 +216,7 @@ async function save(net, optimizer, update, folder) {
   writeFileSync(new URL('latest.json', folder), checkpoint);
 }
 
-async function load(net, optimizer, file) {
-  const checkpoint = JSON.parse(readFileSync(file, 'utf8'));
+async function load(net, optimizer, checkpoint) {
   for (const variable of variablesOf(net)) {
     const { shape, data } = checkpoint.model[variable.name];
     variable.assign(tf.tensor(data, shape));
@@ -223,6 +232,7 @@ async function playSession({ url, run, net, trainer, label }) {
   let observation = await game.observe();
   let segment = { states: [], actions: [], logProbs: [], values: [], rewards: [], dones: [] };
   let episodeReturn = 0;
+  let episodeKills = 0;
   let steps = 0;
 
   const send = (lastValue) => {
@@ -239,7 +249,7 @@ async function playSession({ url, run, net, trainer, label }) {
     }
     const state = features(observation, game.info);
     const { action, logProb, value } = act(net, state);
-    const [turn, boost] = ACTIONS[action];
+    const [turn, boost] = net.actions[action];
     game.steer(observation.me.angle + turn);
     game.boost(boost && observation.me.points > 0);
     let nextObservation;
@@ -253,16 +263,17 @@ async function playSession({ url, run, net, trainer, label }) {
     segment.actions.push(action);
     segment.logProbs.push(logProb);
     segment.values.push(value);
-    segment.rewards.push(reward);
+    segment.rewards.push(reward * REWARD_SCALE);
     segment.dones.push(done ? 1 : 0);
     episodeReturn += reward;
     steps++;
 
     if (done) {
       send(0);
-      game.log({ reward: episodeReturn, steps, ...trainer.takeStats() });
+      game.log({ reward: episodeReturn, steps, kills: nextObservation.kills - episodeKills, ...trainer.takeStats() });
       console.log(`${label}: return ${episodeReturn.toFixed(1)}, steps ${steps}`);
       episodeReturn = 0;
+      episodeKills = nextObservation.kills;
       steps = 0;
     } else if (segment.actions.length >= SEGMENT_STEPS) {
       send(act(net, features(nextObservation, game.info)).value);
@@ -307,14 +318,17 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
       sessions: { type: 'string', default: '1' },
       run: { type: 'string', default: 'ppo-js-1' },
       updates: { type: 'string' },
-      resume: { type: 'string' },
+      model: { type: 'string' },
     },
   });
 
-  const net = createActorCritic();
-  const optimizer = tf.train.adam(LEARNING_RATE);
   const folder = new URL(`${encodeURIComponent(args.run)}/`, CHECKPOINTS);
-  const update = args.resume ? await load(net, optimizer, args.resume) : 0;
+  const model = args.model ?? new URL('latest.json', folder);
+  const checkpoint = args.model || existsSync(model) ? JSON.parse(readFileSync(model, 'utf8')) : null;
+  const net = createActorCritic(checkpoint ? checkpoint.turns ?? LEGACY_TURNS : TURNS);
+  const optimizer = tf.train.adam(LEARNING_RATE);
+  const update = checkpoint ? await load(net, optimizer, checkpoint) : 0;
+  console.log(update ? `continuing ${model} from update ${update}` : `new model for run ${args.run}`);
   const finish = async () => {
     await save(net, optimizer, trainer.update, folder);
     console.log(`saved ${new URL('latest.json', folder).pathname} at update ${trainer.update}`);
