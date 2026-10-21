@@ -6,6 +6,7 @@ import http from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
 import 'dotenv/config';
+import { adminRouter } from './admin/router.js';
 import { pool } from './db/pool.js';
 import { attachLab } from './lab/agents.js';
 import { labRouter } from './lab/router.js';
@@ -49,6 +50,7 @@ game.start();
 const flushMinutes = Number(process.env.LAB_FLUSH_MINUTES) || 5;
 const lab = attachLab({ io, game, pool, flushMinutes, room: port });
 app.use('/api/lab', labRouter({ pool, lab, password: process.env.LAB_ADMIN_PASSWORD, flushMinutes }));
+app.use('/api/admin', adminRouter({ game, password: process.env.ADMIN_PASSWORD }));
 
 app.get('/version', (req, res) => {
   return res.json({ version: rootPkg.version });

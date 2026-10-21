@@ -20,7 +20,13 @@ const INK = {
   border: 'rgba(255,255,255,0.10)',
   pause: 'rgba(255,255,255,0.04)',
 };
-const DEATHS = [['bot', 'Bot'], ['human', 'Człowiek'], ['agent', 'Inny agent'], ['disconnect', 'Rozłączenie']];
+const DEATHS = [
+  ['bot', 'Bot', SERIES[0]],
+  ['human', 'Człowiek', SERIES[1]],
+  ['agent', 'Inny agent', SERIES[2]],
+  ['disconnect', 'Rozłączenie', SERIES[3]],
+  ['admin', 'Admin', INK.muted],
+];
 const FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif';
 const PAGE_SIZE = 10;
 const LOG_LINES = 2000;
@@ -438,13 +444,13 @@ const survivalChart = computed(() => timeChart(
 const deathChart = computed(() => {
   const counted = progress.value.filter((r) => Object.keys(r.deaths).length);
   const option = chart(DEATHS
-    .map(([cause, label], i) => ({
+    .map(([cause, label, color]) => ({
       name: label,
       type: 'bar',
       stack: 'deaths',
       barMaxWidth: 24,
       data: counted.map((r) => r.deaths[cause] || 0),
-      itemStyle: { color: SERIES[i], borderColor: INK.surface, borderWidth: 1 },
+      itemStyle: { color, borderColor: INK.surface, borderWidth: 1 },
     }))
     .filter((series) => series.data.some((count) => count > 0)));
   option.xAxis = {
@@ -652,7 +658,7 @@ onUnmounted(() => {
           </div>
           <article class="card new-run-form">
             <label>Nazwa
-              <input v-model="newRun.name" maxlength="40" pattern="[\w .:\-]+" placeholder="np. slither-v6" required autofocus>
+              <input v-model="newRun.name" maxlength="40" pattern="\w[\w .:\-]*" placeholder="np. slither-v6" required autofocus>
             </label>
             <label>Klucz trenera
               <select v-model="newRun.keyId" required>

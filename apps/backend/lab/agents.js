@@ -4,7 +4,7 @@ import { hostname } from 'node:os';
 import { findKey } from './keys.js';
 import { addEpisode, addMetrics, createProgress, summarize } from './progress.js';
 
-export const RUN_NAME = /^[\w .:-]{1,40}$/;
+export const RUN_NAME = /^\w[\w .:-]{0,39}$/;
 const METRIC_NAME = /^[\w./-]{1,40}$/;
 const MAX_METRICS = 32;
 const SYNC_MS = 2000;

@@ -206,6 +206,7 @@
     <script src="https://cdn.jsdelivr.net/npm/socket.io-client@4.5.2/dist/socket.io.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/axios/1.0.0/axios.min.js"></script>
     <script src="./class/GameClient.js"></script>
+    <script src="./admin/AdminPanel.js"></script>
     <script
       data-goatcounter="https://slither-stats.stah.dev/count"
       data-goatcounter-settings='{"no_onload": true}'
@@ -259,6 +260,7 @@
       });
 
       const game = new GameClient();
+      new AdminPanel(game);
 
       fetch('/version')
         .then((r) => r.json())

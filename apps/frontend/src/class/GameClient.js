@@ -45,6 +45,7 @@ class GameClient {
     this.cameraY = 0;
     this.zoom = 1;
     this._targetZoom = 1;
+    this.fogRadius = { min: 300, max: 2500 };
 
     this.spectatorX = 2000;
     this.spectatorY = 2000;
@@ -442,6 +443,10 @@ class GameClient {
 
   #setupUpdateHandler() {
     const typeMap = ['point', 'tail', 'player'];
+
+    this.socket.on('env-info', (info) => {
+      this.fogRadius = info.fogRadius;
+    });
 
     this.socket.on('ded', () => {
       document.querySelector('#deathscreen').style.display = 'flex';
@@ -1191,13 +1196,12 @@ class GameClient {
   #getVisionRadius(size) {
     const SPAWN_SIZE = 10;
     const GROWTH_CAP_SIZE = 100;
-    const FOG_RADIUS_MIN = 300;
-    const FOG_RADIUS_MAX = 2500;
+    const { min, max } = this.fogRadius;
     const t = Math.min(
       1,
       Math.max(0, (size - SPAWN_SIZE) / (GROWTH_CAP_SIZE - SPAWN_SIZE)),
     );
-    return FOG_RADIUS_MIN + (FOG_RADIUS_MAX - FOG_RADIUS_MIN) * t;
+    return min + (max - min) * t;
   }
 
   #getTargetZoom(visionRadius) {

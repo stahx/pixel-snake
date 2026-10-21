@@ -74,6 +74,8 @@ describe('lab/agents', () => {
     assert.equal(wrong.message, 'Invalid or revoked lab key');
     const badRun = await authorize(fakeSocket('a', { key: KEY, run: 'x'.repeat(41) }));
     assert.match(badRun.message, /^Run name must match/);
+    const dots = await authorize(fakeSocket('a', { key: KEY, run: '..' }));
+    assert.match(dots.message, /^Run name must match/);
 
     const socket = await connectAgent('agent-1');
     assert.deepEqual(socket.data.agent, { runId: RUN_ID, keyId: KEY_ID, name: 'ppo-run-1' });

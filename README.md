@@ -39,6 +39,16 @@ The port and host are configurable via `apps/backend/.env` (see
 `apps/backend/.env.example`) — copy it to `.env` and adjust `PORT`/`HOST`
 if you need a different port.
 
+## Admin panel
+
+Set `ADMIN_PASSWORD` in `apps/backend/.env`, restart the backend, open the game
+with `#admin` at the end of the URL (http://localhost:3030/#admin) and log in.
+The panel in the top-right corner changes world settings live (game speed,
+bots, food, vision radius, speeds), spawns snakes and sets the points of,
+teleports or kills any player. Without `ADMIN_PASSWORD` the admin API answers
+503 and the panel stays hidden; once logged in, it shows without `#admin` until
+the session ends (12 hours or a backend restart).
+
 ## Project structure
 - `apps/backend` — game server (Express, Socket.IO, game loop)
 - `apps/frontend` — canvas-based client (plain JS, Tailwind for UI chrome)

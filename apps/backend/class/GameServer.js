@@ -29,6 +29,10 @@ const BOOST_COST_POINTS = 1;
 const BOOST_POINTS_PER_DROP = 2;
 const DROPPED_POINT_SIZE = 8;
 const DEATH_POINTS_KEPT = 0.7;
+const TAIL_EVERY_TICKS = 5;
+const SPAWN_CLEARANCE = 100;
+
+const wrap = (value, size) => ((value % size) + size) % size;
 
 class GameServer extends EventEmitter {
   constructor(io, config) {
@@ -38,6 +42,7 @@ class GameServer extends EventEmitter {
 
     this.running = false;
     this.tick = 0;
+    this.stats = { tps: 0, stepMs: 0 };
 
     this.players = new Map();
     this.tails = new Map();
@@ -131,10 +136,19 @@ class GameServer extends EventEmitter {
   }
 
   start() {
-    const period = 1000 / (this.config.TICK_RATE * this.config.TIMESCALE);
     let due = Date.now();
+    let sample = { from: due, ticks: 0, ms: 0 };
     const loop = () => {
+      const began = performance.now();
       this.step();
+      sample.ticks++;
+      sample.ms += performance.now() - began;
+      const now = Date.now();
+      if (now - sample.from >= 1000) {
+        this.stats = { tps: (sample.ticks * 1000) / (now - sample.from), stepMs: sample.ms / sample.ticks };
+        sample = { from: now, ticks: 0, ms: 0 };
+      }
+      const period = 1000 / (this.config.TICK_RATE * this.config.TIMESCALE);
       due = Math.max(due + period, Date.now() - period);
       setTimeout(loop, due - Date.now());
     };
@@ -188,7 +202,7 @@ class GameServer extends EventEmitter {
   }
 
   #populateWorld() {
-    this.#generatePoints(this.config.POINTS_AMOUNT);
+    this.#reconcilePoints();
     this.botManager.reconcile();
   }
 
@@ -287,7 +301,7 @@ class GameServer extends EventEmitter {
 
       const tailEntities = this.#getTailEntities(player.playerId);
       const tailLimit = tailEntities.length > maxTailSegments(player.points);
-      const shouldAddTail = player.tailCounter % 5 === 0;
+      const shouldAddTail = player.tailCounter % TAIL_EVERY_TICKS === 0;
 
       if (pointDist > 0 && !tailLimit && shouldAddTail) {
         const tailEntity = new Tail(player.x, player.y, {
@@ -417,14 +431,14 @@ class GameServer extends EventEmitter {
       this.#generatePoint(seg.x, seg.y, DROPPED_POINT_SIZE);
     }
 
-    if (killer.agent) this.sockets.get(killer.playerId).emit('kill', { points: player.points });
+    if (killer?.agent) this.sockets.get(killer.playerId).emit('kill', { points: player.points });
 
     if (this.botManager.isBot(player.playerId)) {
       this.botManager.remove(player.playerId);
       this.botManager.reconcile();
     } else {
       if (player.agent) {
-        const cause = this.botManager.isBot(killer.playerId) ? 'bot' : killer.agent ? 'agent' : 'human';
+        const cause = killer ? this.#playerType(killer) : 'admin';
         this.#endEpisode(player, cause);
       }
       this.sockets.get(player.playerId).emit('ded');
@@ -516,9 +530,12 @@ class GameServer extends EventEmitter {
     if (point.respawns) this.#generatePoint();
   }
 
-  #generatePoints(amount) {
-    for (let x = 0; x <= amount; x++) {
-      this.#generatePoint();
+  #reconcilePoints() {
+    const respawning = this.#getPointEntities().filter((point) => point.respawns);
+    for (let i = respawning.length; i < this.config.POINTS_AMOUNT; i++) this.#generatePoint();
+    for (const point of respawning.slice(this.config.POINTS_AMOUNT)) {
+      this.points.delete(point.id);
+      this.allEntities.delete(point.id);
     }
   }
 
@@ -566,6 +583,87 @@ class GameServer extends EventEmitter {
       }
       this.tails.delete(playerId);
     }
+  }
+
+  setConfig(values) {
+    Object.assign(this.config, values);
+    if (this.humanSockets.size) this.#populateWorld();
+    for (const socket of this.sockets.values()) socket.emit('env-info', this.#envInfo());
+  }
+
+  spawnSnake(points, nearId) {
+    const W = this.config.MAP_WIDTH;
+    const H = this.config.MAP_HEIGHT;
+    const near = this.players.get(nearId);
+    const size = calculatePlayerNewSize({ points });
+    let position = getRandomPosition(W, H);
+    if (near) {
+      const side = near.currentAngle + Math.PI / 2;
+      const gap = near.size + size + SPAWN_CLEARANCE;
+      position = { x: wrap(near.x + Math.cos(side) * gap, W), y: wrap(near.y + Math.sin(side) * gap, H) };
+    }
+    const snake = this.botManager.spawnExtra(position);
+    Object.assign(snake, { points, maxPoints: points, size });
+    if (near) snake.currentAngle = near.currentAngle;
+
+    const spacing = TAIL_EVERY_TICKS * this.#moveSpeed(snake);
+    const tail = this.tails.get(snake.playerId);
+    for (let k = maxTailSegments(points); k > 0; k--) {
+      const segment = new Tail(
+        wrap(snake.x - Math.cos(snake.currentAngle) * spacing * k, W),
+        wrap(snake.y - Math.sin(snake.currentAngle) * spacing * k, H),
+        { playerId: snake.playerId, color: snake.color },
+      );
+      tail.push(segment);
+      this.allEntities.set(segment.id, segment);
+    }
+    return snake;
+  }
+
+  setPoints(playerId, points) {
+    const player = this.players.get(playerId);
+    player.points = points;
+    player.maxPoints = Math.max(player.maxPoints, points);
+  }
+
+  teleport(playerId, x, y) {
+    const player = this.players.get(playerId);
+    const dx = x - player.x;
+    const dy = y - player.y;
+    for (const entity of [player, ...this.#getTailEntities(playerId)]) {
+      entity.x = wrap(entity.x + dx, this.config.MAP_WIDTH);
+      entity.y = wrap(entity.y + dy, this.config.MAP_HEIGHT);
+    }
+    player.mouseX += dx;
+    player.mouseY += dy;
+  }
+
+  kill(playerId) {
+    this.#killPlayer(this.players.get(playerId));
+  }
+
+  adminState() {
+    let tails = 0;
+    for (const tail of this.tails.values()) tails += tail.length;
+    return {
+      ...this.stats,
+      food: this.points.size,
+      tails,
+      players: this.#getPlayerEntities()
+        .sort((a, b) => b.points - a.points)
+        .map((player) => ({
+          id: player.playerId,
+          name: player.name,
+          type: this.#playerType(player),
+          points: player.points,
+          size: Math.round(player.size),
+        })),
+      config: { ...this.config },
+    };
+  }
+
+  #playerType(player) {
+    return this.botManager.isBot(player.playerId) ? 'bot' : player.agent ? 'agent' : 'human';
   }
 
   #getLeaderboard() {
