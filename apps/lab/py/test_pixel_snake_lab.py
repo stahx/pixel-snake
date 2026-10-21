@@ -1,9 +1,13 @@
+import http.server
+import json
 import os
+import threading
 
 import pytest
 import socketio
 
-from pixel_snake_lab import Game, apply_update, load_env, parse_ports, split_lines
+import pixel_snake_lab
+from pixel_snake_lab import Game, apply_update, find_worlds, load_env, split_lines
 
 
 def test_load_env(tmp_path, monkeypatch):
@@ -38,10 +42,36 @@ def test_apply_update():
     assert before_change[1]['x'] == 10
 
 
-def test_parse_ports():
-    assert parse_ports('3030') == [3030]
-    assert parse_ports('3031-3034') == [3031, 3032, 3033, 3034]
-    assert parse_ports('3030,3035-3036') == [3030, 3035, 3036]
+def test_find_worlds(monkeypatch):
+    worlds = {'quiet': [{'url': 'http://127.0.0.1:51000', 'token': 'run-1.signed', 'sessions': 2}]}
+    received = []
+
+    class Lab(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+            received.append((self.path, self.headers['Authorization'], body))
+            status, reply = (200, worlds) if body['groups'] == ['quiet'] else (409, {'error': 'Group crowded is not running'})
+            self.send_response(status)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps(reply).encode())
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Lab)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    monkeypatch.setenv('PIXEL_SNAKE_LAB_URL', f'http://127.0.0.1:{server.server_port}')
+    try:
+        assert find_worlds('ppo-1', ['quiet'], key='psl_x') == worlds
+        assert received == [('/api/lab/agent/worlds', 'Bearer psl_x', {'run': 'ppo-1', 'groups': ['quiet']})]
+        with pytest.raises(ConnectionError, match='Group crowded is not running'):
+            find_worlds('ppo-1', ['crowded'], key='psl_x')
+    finally:
+        server.shutdown()
+        server.server_close()
+    with pytest.raises(ConnectionError, match='lab unreachable'):
+        find_worlds('ppo-1', ['quiet'], key='psl_x')
 
 
 def test_split_lines():
@@ -49,6 +79,16 @@ def test_split_lines():
     assert split_lines(b'upd', b'ate 2\r\n\n') == (['update 2', ''], b'')
     assert split_lines(b'', 'zażółć\n'.encode()[:3]) == ([], 'zażółć'.encode()[:3])
     assert split_lines(b'', b'x' * 1500 + b'\n') == (['x' * 1000], b'')
+
+
+def test_game_init(monkeypatch):
+    monkeypatch.setattr(pixel_snake_lab, 'find_worlds',
+                        lambda run, groups, key: {'quiet': [{'url': None, 'token': None, 'sessions': 2}]})
+
+    with pytest.raises(ConnectionError, match='world quiet #1 is restarting'):
+        Game('quiet')
+    with pytest.raises(ConnectionError, match='group quiet has no world 2'):
+        Game('quiet', world=1)
 
 
 def test_game_emit():

@@ -17,7 +17,7 @@ import torch.multiprocessing as mp
 from torch import nn
 from torch.distributions import Categorical
 
-from pixel_snake_lab import Game, parse_ports, stream_output, sync_config
+from pixel_snake_lab import Game, find_worlds, stream_output, sync_config
 
 TURNS = (-0.32, -0.16, 0.0, 0.16, 0.32)
 ACTIONS = [(turn, boost) for turn in TURNS for boost in (False, True)]
@@ -165,14 +165,6 @@ def advantages(rewards, values, dones, last_value, config):
     return result, result + np.asarray(values, dtype=np.float32)
 
 
-def parse_rooms(spec, sessions):
-    rooms = {}
-    for group in spec.split(','):
-        ports, _, count = group.partition(':')
-        rooms |= dict.fromkeys(parse_ports(ports), int(count or sessions))
-    return rooms
-
-
 def act(net, state):
     with torch.no_grad():
         logits, value = net(torch.as_tensor(state))
@@ -181,8 +173,8 @@ def act(net, state):
     return action.item(), distribution.log_prob(action).item(), value.item()
 
 
-def play_session(url, run, net, rollouts, learner_stats, label, config):
-    game = Game(url=url, run=run)
+def play_session(group, world, run, net, rollouts, learner_stats, label, config):
+    game = Game(group, run=run, world=world)
     observation = game.observe()
     segment = {'states': [], 'actions': [], 'log_probs': [], 'values': [], 'rewards': [], 'dones': []}
     episode_return = 0.0
@@ -245,22 +237,23 @@ def play_session(url, run, net, rollouts, learner_stats, label, config):
         observation = next_observation
 
 
-def keep_playing(url, run, net, rollouts, learner_stats, label, config):
+def keep_playing(group, world, run, net, rollouts, learner_stats, label, config):
     while True:
         started = time.monotonic()
         try:
-            play_session(url, run, net, rollouts, learner_stats, label, config)
+            play_session(group, world, run, net, rollouts, learner_stats, label, config)
         except ConnectionError as error:
             if time.monotonic() - started > RECONNECT_SECONDS:
                 print(f'{label}: {error}, reconnecting', flush=True)
             time.sleep(RECONNECT_SECONDS)
 
 
-def play_server(url, run, numbers, net, rollouts, learner_stats, config):
+def play_world(group, world, run, numbers, net, rollouts, learner_stats, config):
     torch.set_num_threads(1)
     rollouts.cancel_join_thread()
     threads = [threading.Thread(target=keep_playing, daemon=True,
-                                args=(url, run, net, rollouts, learner_stats, f'{url} session {number}', config))
+                                args=(group, world, run, net, rollouts, learner_stats,
+                                      f'{group} #{world + 1} session {number}', config))
                for number in numbers]
     for thread in threads:
         thread.start()
@@ -338,10 +331,8 @@ class Discard:
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--host', default='http://127.0.0.1')
-    parser.add_argument('--ports', default='3030',
-                        help='servers: 3030, 3031-3050 or 3031,3035; 3031-3040:1,3041-3050:10 sets the sessions of each group')
-    parser.add_argument('--sessions', type=int, default=1, help='training sessions per server without its own count')
+    parser.add_argument('--groups', required=True,
+                        help='lab groups to play in, e.g. quiet,crowded: every world gets the sessions its group sets')
     parser.add_argument('--run', default='ppo-1')
     parser.add_argument('--updates', type=int, help='stop after this many model updates in this run (default: until Ctrl+C)')
     parser.add_argument('--model', type=Path, help="checkpoint to start from (default: this run's latest.pt if it exists)")
@@ -350,22 +341,23 @@ if __name__ == '__main__':
         parser.add_argument(f'--{name.replace("_", "-")}', dest=name, type=type(default), metavar=str(default),
                             help="overrides checkpoints/<run>/config.json and the lab panel")
     args = parser.parse_args()
-    rooms = parse_rooms(args.ports, args.sessions)
-    url = f'{args.host}:{next(iter(rooms))}'
+    run = f'{args.run}-play' if args.play else args.run
 
     folder = CHECKPOINTS / args.run
     trainer = folder / 'trainer.py'
     if trainer.exists() and trainer.resolve() != Path(__file__).resolve():
         print(f'run {args.run} has its own trainer: {trainer}', flush=True)
         os.execv(sys.executable, [sys.executable, str(trainer), *sys.argv[1:]])
-    stream_output(url, f'{args.run}-play' if args.play else args.run)
+    stream_output(run)
 
     config_file = folder / 'config.json'
     overrides = {name: getattr(args, name) for name in PARAMETERS if getattr(args, name) is not None}
     try:
         saved = PARAMETERS | parameters(json.loads(config_file.read_text()) if config_file.exists() else {}, config_file)
         config = (saved | overrides if args.play else
-                  parameters(sync_config(url, args.run, saved, overrides), 'the lab panel'))
+                  parameters(sync_config(args.run, saved, overrides), 'the lab panel'))
+        worlds = [(group, world, found['sessions']) for group, listed in find_worlds(run, args.groups.split(',')).items()
+                  for world, found in enumerate(listed)]
     except (ValueError, OSError) as error:
         sys.exit(f'{parser.prog}: error: {error}')
     if not args.play:
@@ -398,9 +390,9 @@ if __name__ == '__main__':
 
     if args.play:
         sessions = [threading.Thread(target=keep_playing, daemon=True,
-                                     args=(f'{args.host}:{port}', f'{args.run}-play', net, Discard(), queue.Queue(),
-                                           f'{args.host}:{port} session {number}', config))
-                    for port, count in rooms.items() for number in range(count)]
+                                     args=(group, world, run, net, Discard(), queue.Queue(),
+                                           f'{group} #{world + 1} session {number}', config))
+                    for group, world, count in worlds for number in range(count)]
         for session in sessions:
             session.start()
         try:
@@ -417,10 +409,10 @@ if __name__ == '__main__':
     # Nobody drains the pipes after Ctrl+C, so joining the feeder threads at exit would hang.
     learner_stats.cancel_join_thread()
     signal.signal(signal.SIGTERM, signal.default_int_handler)
-    for port, count in rooms.items():
+    for group, world, count in worlds:
         for first in range(0, count, PROCESS_SESSIONS):
             numbers = range(first, min(first + PROCESS_SESSIONS, count))
-            mp.Process(target=play_server, args=(f'{args.host}:{port}', args.run, numbers, net, rollouts, learner_stats, config),
+            mp.Process(target=play_world, args=(group, world, args.run, numbers, net, rollouts, learner_stats, config),
                        daemon=True).start()
     print(f'learning on {DEVICE}', flush=True)
     learn(learner, net, optimizer, update, rollouts, learner_stats, folder, config,

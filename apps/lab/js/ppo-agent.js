@@ -1,13 +1,15 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import * as tf from '@tensorflow/tfjs';
 
-import { Game, parsePorts } from './pixel-snake-lab.js';
+import { Game, findWorlds } from './pixel-snake-lab.js';
 
 const TURNS = [-0.32, -0.16, -0.05, 0, 0.05, 0.16, 0.32];
 const LEGACY_TURNS = [-0.5, 0, 0.5];
 const TICKS_PER_ACTION = 4;
+const RECONNECT_MS = 5000;
 const DEATH_PENALTY = -50;
 const KILL_REWARD = 30;
 const KILL_SHARE = 0.5;
@@ -227,8 +229,8 @@ async function load(net, optimizer, checkpoint) {
   return checkpoint.update;
 }
 
-async function playSession({ url, run, net, trainer, label }) {
-  const game = await Game.connect({ url, run });
+async function playSession({ group, world, run, net, trainer, label }) {
+  const game = await Game.connect({ group, world, run });
   let observation = await game.observe();
   let segment = { states: [], actions: [], logProbs: [], values: [], rewards: [], dones: [] };
   let episodeReturn = 0;
@@ -282,6 +284,17 @@ async function playSession({ url, run, net, trainer, label }) {
   }
 }
 
+async function keepPlaying(session) {
+  while (true) {
+    try {
+      await playSession(session);
+    } catch (error) {
+      console.error(`${session.label}: ${error.message}, reconnecting`);
+    }
+    await sleep(RECONNECT_MS);
+  }
+}
+
 function createTrainer({ net, optimizer, update, folder, lastUpdate, onFinish }) {
   let segments = [];
   let collected = 0;
@@ -313,14 +326,13 @@ function createTrainer({ net, optimizer, update, folder, lastUpdate, onFinish })
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const { values: args } = parseArgs({
     options: {
-      host: { type: 'string', default: 'http://127.0.0.1' },
-      ports: { type: 'string', default: '3030' },
-      sessions: { type: 'string', default: '1' },
+      groups: { type: 'string' },
       run: { type: 'string', default: 'ppo-js-1' },
       updates: { type: 'string' },
       model: { type: 'string' },
     },
   });
+  if (!args.groups) throw new Error('--groups is required, e.g. --groups quiet,crowded');
 
   const folder = new URL(`${encodeURIComponent(args.run)}/`, CHECKPOINTS);
   const model = args.model ?? new URL('latest.json', folder);
@@ -339,10 +351,12 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
 
   process.once('SIGINT', finish);
 
-  for (const port of parsePorts(args.ports)) {
-    for (let number = 0; number < Number(args.sessions); number++) {
-      playSession({ url: `${args.host}:${port}`, run: args.run, net, trainer, label: `${args.host}:${port} session ${number}` })
-        .catch((error) => console.error(`${port} session ${number}: ${error.message}`));
-    }
+  const layout = await findWorlds({ run: args.run, groups: args.groups.split(',') });
+  for (const [group, worlds] of Object.entries(layout)) {
+    worlds.forEach(({ sessions }, world) => {
+      for (let number = 0; number < sessions; number++) {
+        keepPlaying({ group, world, run: args.run, net, trainer, label: `${group} #${world + 1} session ${number}` });
+      }
+    });
   }
 }

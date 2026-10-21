@@ -14,6 +14,7 @@ from pathlib import Path
 import socketio
 
 NAMESPACE = '/lab'
+LAB_URL = 'http://127.0.0.1:3100'
 ENTITY_TYPES = ('point', 'tail', 'player')
 FIELD_NAMES = {'i': 'id', 't': 'type', 'x': 'x', 'y': 'y', 'c': 'color', 's': 'size',
                'p': 'player', 'n': 'name', 'pt': 'points', 'a': 'angle', 'b': 'boosting'}
@@ -30,23 +31,16 @@ def load_env(path=next((folder / '.env' for folder in Path(__file__).resolve().p
                 os.environ.setdefault(name.strip(), value.strip().strip('\'"'))
 
 
-def parse_ports(ports):
-    parsed = []
-    for part in ports.split(','):
-        first, _, last = part.partition('-')
-        parsed.extend(range(int(first), int(last or first) + 1))
-    return parsed
-
-
 LOG_EVERY = 2.0
 LOG_BATCH = 1000
 LOG_LINE_LENGTH = 1000
 
 
-def _post(url, path, body, key):
+def _post(path, body, key):
     load_env()
+    url = f'{os.environ.get("PIXEL_SNAKE_LAB_URL", LAB_URL)}/api/lab/agent/{path}'
     request = urllib.request.Request(
-        f'{url}/api/lab/agent/{path}', method='POST', data=json.dumps(body).encode(),
+        url, method='POST', data=json.dumps(body).encode(),
         headers={'Content-Type': 'application/json',
                  'Authorization': f'Bearer {key or os.environ["PIXEL_SNAKE_LAB_KEY"]}'})
     try:
@@ -56,13 +50,20 @@ def _post(url, path, body, key):
         try:
             message = json.load(error)['error']
         except (ValueError, KeyError):
-            message = f'HTTP {error.code} from {url}/api/lab/agent/{path}: restart the server on the current code'
+            message = f'HTTP {error.code} from {url}: restart the lab on the current code'
         raise ConnectionError(message) from error
+    except OSError as error:
+        raise ConnectionError(f'lab unreachable at {url}: {error}') from error
 
 
-def sync_config(url, run, config, overrides, key=None):
+def sync_config(run, config, overrides, key=None):
     """Report the run's parameters; returns them with the panel's pending edits and then `overrides` applied."""
-    return _post(url, 'config', {'run': run, 'config': config, 'overrides': overrides}, key)['config']
+    return _post('config', {'run': run, 'config': config, 'overrides': overrides}, key)['config']
+
+
+def find_worlds(run, groups, key=None):
+    """Each group's worlds as {group: [{'url', 'token', 'sessions'}]}; a restarting world has no url yet."""
+    return _post('worlds', {'run': run, 'groups': groups}, key)
 
 
 def split_lines(pending, chunk):
@@ -70,7 +71,7 @@ def split_lines(pending, chunk):
     return [line.decode(errors='replace').rstrip('\r')[:LOG_LINE_LENGTH] for line in lines], pending
 
 
-def stream_output(url, run, key=None):
+def stream_output(run, key=None):
     terminal = os.dup(1)
     read_end, write_end = os.pipe()
     os.dup2(write_end, 1)
@@ -95,7 +96,7 @@ def stream_output(url, run, key=None):
                 batch.append(lines.get())
             if batch:
                 try:
-                    _post(url, 'logs', {'run': run, 'lines': batch}, key)
+                    _post('logs', {'run': run, 'lines': batch}, key)
                 except (ConnectionError, OSError) as error:
                     os.write(terminal, f'lab: lost {len(batch)} log lines: {error}\n'.encode())
 
@@ -136,7 +137,13 @@ def apply_update(entities, update):
 
 
 class Game:
-    def __init__(self, url='http://127.0.0.1:3030', run='TRAINING', key=None):
+    def __init__(self, group, run='TRAINING', world=0, key=None):
+        worlds = find_worlds(run, [group], key)[group]
+        if world >= len(worlds):
+            raise ConnectionError(f'group {group} has no world {world + 1}')
+        url, token = worlds[world]['url'], worlds[world]['token']
+        if not url:
+            raise ConnectionError(f'world {group} #{world + 1} is restarting')
         self.info = None
         self.entities = {}
         self.leaderboard = []
@@ -156,10 +163,8 @@ class Game:
         self._sio.on('lab-error', lambda message: warnings.warn(message), namespace=NAMESPACE)
         self._sio.on('connect_error', self._on_connect_error, namespace=NAMESPACE)
         self._sio.on('disconnect', self._on_disconnect, namespace=NAMESPACE)
-        load_env()
-        key = key or os.environ['PIXEL_SNAKE_LAB_KEY']
         try:
-            self._sio.connect(url, auth={'key': key, 'run': run}, namespaces=[NAMESPACE], transports=['websocket'])
+            self._sio.connect(url, auth={'token': token, 'run': run}, namespaces=[NAMESPACE], transports=['websocket'])
         except socketio.exceptions.ConnectionError as error:
             raise ConnectionError(self._connect_error or str(error)) from error
         self.sid = self._sio.get_sid(NAMESPACE)
@@ -177,7 +182,7 @@ class Game:
             tick = self.tick
             self._changed.wait_for(lambda: self.tick != tick or not self.alive or self._disconnected, timeout=timeout)
             if self._disconnected:
-                raise ConnectionError('Disconnected from the lab server')
+                raise ConnectionError('Disconnected from the world')
             return {'tick': self.tick, 'alive': self.alive, 'me': self.me, 'kills': self.kills, 'kill_points': self.kill_points,
                     'entities': dict(self.entities), 'leaderboard': self.leaderboard}
 
@@ -212,7 +217,7 @@ class Game:
         try:
             self._sio.emit(event, data, namespace=NAMESPACE)
         except socketio.exceptions.BadNamespaceError as error:
-            raise ConnectionError('Disconnected from the lab server') from error
+            raise ConnectionError('Disconnected from the world') from error
 
     def _on_connect_error(self, data):
         self._connect_error = data.get('message') if isinstance(data, dict) else data

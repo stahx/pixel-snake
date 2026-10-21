@@ -9,7 +9,7 @@ import torch
 import ppo_agent
 from ppo_agent import (ACTIONS, DEVICE, ENEMY_BOOST, ENEMY_FORWARD, ENEMY_HEAD, ENEMY_RIGHT, ENEMY_SIZE, ENEMY_TAIL, FOOD,
                        GRID_CHANNELS, GRID_SIZE, OWN_TAIL, PARAMETERS, RADAR_FEATURES, SELF_FEATURES, VISIBLE, ActorCritic,
-                       advantages, keep_playing, learn, parameters, parse_rooms, radar, reward_for, save)
+                       advantages, keep_playing, learn, parameters, radar, reward_for, save)
 
 INFO = {'map': {'width': 4000, 'height': 4000}, 'growth': {'spawnSize': 10, 'maxSize': 100},
         'fogRadius': {'min': 300, 'max': 2500}}
@@ -41,11 +41,6 @@ def test_radar():
         GRID_CHANNELS, GRID_SIZE, GRID_SIZE)[VISIBLE].all()
     assert state[-SELF_FEATURES:].tolist() == pytest.approx([0.0, 0.0, 0.1, 4 / 6])
     assert radar(observation, INFO, 90)[-1] == 4
-
-
-def test_parse_rooms():
-    assert parse_rooms('3031-3032', 5) == {3031: 5, 3032: 5}
-    assert parse_rooms('3030,3031-3032:10', 1) == {3030: 1, 3031: 10, 3032: 10}
 
 
 def test_advantages():
@@ -119,12 +114,13 @@ def test_keep_playing(monkeypatch):
     def play_session(*args):
         calls.append(args)
         if len(calls) < 3:
-            raise ConnectionError('Disconnected from the lab server')
+            raise ConnectionError('Disconnected from the world')
         raise KeyboardInterrupt
 
     monkeypatch.setattr(ppo_agent, 'play_session', play_session)
     monkeypatch.setattr(time, 'sleep', lambda seconds: None)
     with pytest.raises(KeyboardInterrupt):
-        keep_playing('http://127.0.0.1:3031', 'run', None, None, None, 'session 0', PARAMETERS)
+        keep_playing('quiet', 1, 'run', None, None, None, 'quiet #2 session 0', PARAMETERS)
 
     assert len(calls) == 3
+    assert calls[0][:3] == ('quiet', 1, 'run')

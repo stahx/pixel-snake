@@ -6,12 +6,12 @@
   "type": "module",
   "scripts": {
     "build": "pnpm -r build",
-    "start": "pnpm -r --reporter=append-only start",
+    "start": "pnpm -r --filter=!@pixel-snake/lab-server --reporter=append-only start",
     "dev": "pnpm -r dev",
+    "lab": "pnpm --filter @pixel-snake/lab-server start",
     "db:up": "docker compose up -d postgres",
-    "db:migrate": "pnpm --filter @pixel-snake/backend db:migrate",
-    "lab:rooms": "pnpm --filter @pixel-snake/backend rooms",
-    "test": "pnpm --filter @pixel-snake/backend test"
+    "db:migrate": "pnpm --filter @pixel-snake/lab-server db:migrate",
+    "test": "pnpm --filter @pixel-snake/backend --filter @pixel-snake/lab-server test"
   },
   "keywords": [],
   "author": "Komornikx",

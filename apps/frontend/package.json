@@ -4,19 +4,11 @@
   "private": true,
   "scripts": {
     "dev": "pnpm run --parallel /^dev:/",
-    "build": "pnpm build:css && vite build",
+    "build": "pnpm build:css",
     "build:css": "tailwindcss -i ./src/style.css -o ./src/output.css",
-    "dev:css": "tailwindcss -i ./src/style.css -o ./src/output.css --watch",
-    "dev:lab": "vite build --watch"
-  },
-  "dependencies": {
-    "echarts": "^6.1.0",
-    "vue": "^3.5.25",
-    "vue-echarts": "^8.3.2"
+    "dev:css": "tailwindcss -i ./src/style.css -o ./src/output.css --watch"
   },
   "devDependencies": {
-    "@vitejs/plugin-vue": "^6.0.10",
-    "tailwindcss": "^3.4.1",
-    "vite": "^8.3.4"
+    "tailwindcss": "^3.4.1"
   }
 }

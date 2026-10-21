@@ -3,6 +3,7 @@ import { parseEnv } from 'node:util';
 import { io } from 'socket.io-client';
 
 const NAMESPACE = '/lab';
+const LAB_URL = 'http://127.0.0.1:3100';
 const ENTITY_TYPES = ['point', 'tail', 'player'];
 const FIELD_NAMES = {
   i: 'id', t: 'type', x: 'x', y: 'y', c: 'color', s: 'size',
@@ -18,11 +19,17 @@ export function loadEnv(file = ENV_FILE) {
   }
 }
 
-export function parsePorts(ports) {
-  return ports.split(',').flatMap((part) => {
-    const [first, last = first] = part.split('-').map(Number);
-    return Array.from({ length: last - first + 1 }, (_, offset) => first + offset);
+export async function findWorlds({ run, groups, key }) {
+  loadEnv();
+  const url = `${process.env.PIXEL_SNAKE_LAB_URL ?? LAB_URL}/api/lab/agent/worlds`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key ?? process.env.PIXEL_SNAKE_LAB_KEY}` },
+    body: JSON.stringify({ run, groups }),
   });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.error ?? `HTTP ${response.status} from ${url}: restart the lab on the current code`);
+  return body;
 }
 
 const renameFields = (wireEntity) => Object.fromEntries(
@@ -43,10 +50,12 @@ export function applyUpdate(entities, update) {
 }
 
 export class Game {
-  static async connect({ url = 'http://127.0.0.1:3030', run = 'TRAINING', key } = {}) {
-    loadEnv();
-    const game = new Game(io(`${url}${NAMESPACE}`, {
-      auth: { key: key ?? process.env.PIXEL_SNAKE_LAB_KEY, run },
+  static async connect({ group, world = 0, run = 'TRAINING', key }) {
+    const found = (await findWorlds({ run, groups: [group], key }))[group][world];
+    if (!found) throw new Error(`Group ${group} has no world ${world + 1}`);
+    if (!found.url) throw new Error(`World ${group} #${world + 1} is restarting`);
+    const game = new Game(io(`${found.url}${NAMESPACE}`, {
+      auth: { token: found.token, run },
       transports: ['websocket'],
       reconnection: false,
     }));
@@ -108,7 +117,7 @@ export class Game {
   async observe(timeout = 1000) {
     const tick = this.tick;
     await this.#waitFor(() => this.tick !== tick || !this.alive, timeout);
-    if (this.#disconnected) throw new Error('Disconnected from the lab server');
+    if (this.#disconnected) throw new Error('Disconnected from the world');
     return { tick: this.tick, alive: this.alive, me: this.me, kills: this.kills, killPoints: this.killPoints, entities: new Map(this.entities), leaderboard: this.leaderboard };
   }
 

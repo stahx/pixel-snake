@@ -4,7 +4,7 @@ import random
 import signal
 import threading
 
-from pixel_snake_lab import Game, parse_ports
+from pixel_snake_lab import Game, find_worlds
 
 TURNS = (-0.5, 0.0, 0.5)
 ACTIONS = [(turn, boost) for turn in TURNS for boost in (False, True)]
@@ -22,8 +22,8 @@ def reward_for(observation, next_observation):
     return next_observation['me']['points'] - observation['me']['points']
 
 
-def play(url, run, episodes, label):
-    game = Game(url=url, run=run)
+def play(group, world, run, episodes, label):
+    game = Game(group, run=run, world=world)
     for episode in range(episodes):
         observation = game.observe()
         episode_return = 0.0
@@ -44,8 +44,9 @@ def play(url, run, episodes, label):
     game.close()
 
 
-def play_room(url, run, episodes, sessions):
-    threads = [threading.Thread(target=play, args=(url, run, episodes, f'{url} session {number}'), daemon=True)
+def play_world(group, world, run, episodes, sessions):
+    threads = [threading.Thread(target=play, args=(group, world, run, episodes, f'{group} #{world + 1} session {number}'),
+                                daemon=True)
                for number in range(sessions)]
     for thread in threads:
         thread.start()
@@ -58,21 +59,20 @@ def play_room(url, run, episodes, sessions):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--host', default='http://127.0.0.1')
-    parser.add_argument('--ports', type=parse_ports, default='3030', help='servers: 3030, 3031-3050 or 3031,3035')
-    parser.add_argument('--sessions', type=int, default=1, help='training sessions per server')
+    parser.add_argument('--groups', required=True, help='lab groups to play in, e.g. quiet,crowded')
     parser.add_argument('--episodes', type=int, default=3)
     parser.add_argument('--run', default='random-baseline')
     args = parser.parse_args()
 
     signal.signal(signal.SIGTERM, signal.default_int_handler)
-    rooms = [multiprocessing.Process(target=play_room, args=(f'{args.host}:{port}', args.run, args.episodes, args.sessions),
-                                     daemon=True)
-             for port in args.ports]
-    for room in rooms:
-        room.start()
+    processes = [multiprocessing.Process(target=play_world, args=(group, world, args.run, args.episodes, found['sessions']),
+                                         daemon=True)
+                 for group, listed in find_worlds(args.run, args.groups.split(',')).items()
+                 for world, found in enumerate(listed)]
+    for process in processes:
+        process.start()
     try:
-        for room in rooms:
-            room.join()
+        for process in processes:
+            process.join()
     except KeyboardInterrupt:
         pass

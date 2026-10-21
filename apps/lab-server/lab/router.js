@@ -1,24 +1,36 @@
 import express from 'express';
 import { randomUUID } from 'node:crypto';
+import { GAME_CONFIG, LIMITS, configError } from '@pixel-snake/backend/Config';
+import { passwordLogin } from '@pixel-snake/backend/login';
 
-import { passwordLogin } from '../helpers/login.js';
 import { RUN_NAME, numbersError } from './agents.js';
 import { createKey, findKey, hashKey } from './keys.js';
 import { mergeWindows } from './progress.js';
-import { createRooms } from './rooms.js';
-import { PORTS, createTrainer } from './trainer.js';
 
 const LOG_LINES = 2000;
 const LOG_BATCH = 1000;
 const LOG_LINE_LENGTH = 1000;
+const GROUP_NAME = /^[\w.-]{1,40}$/;
+const MAX_GROUPS = 20;
+const MAX_PROCESSES = 40;
+const MAX_SESSIONS = 32;
+const DEFAULTS = Object.fromEntries(Object.keys(LIMITS).map((name) => [name, GAME_CONFIG[name]]));
 
 const fail = (status, message) => Object.assign(new Error(message), { status });
 const parametersError = (values) => (values && typeof values === 'object' && !Array.isArray(values) && !Object.keys(values).length
   ? null
   : numbersError(values, 'Parameters'));
+const groupsError = (groups) => (Array.isArray(groups) && groups.length && groups.length <= MAX_GROUPS
+  && groups.every((name) => typeof name === 'string' && GROUP_NAME.test(name))
+  ? null
+  : `Groups must be a list of 1-${MAX_GROUPS} group names`);
+const sessionsError = (sessions) => (Array.isArray(sessions) && sessions.length && sessions.length <= MAX_PROCESSES
+  && sessions.every((count) => Number.isInteger(count) && count >= 1 && count <= MAX_SESSIONS)
+  ? null
+  : `Sessions must list 1-${MAX_PROCESSES} processes of 1-${MAX_SESSIONS} sessions each`);
 const route = (handler) => (req, res, next) => handler(req, res).catch(next);
 
-export function labRouter({ pool, lab, password, flushMinutes, trainer = createTrainer(), roomServers = createRooms() }) {
+export function labRouter({ pool, lab, worlds, password, flushMinutes, trainer }) {
   const router = express.Router();
 
   async function agentRun(req) {
@@ -75,6 +87,23 @@ export function labRouter({ pool, lab, password, flushMinutes, trainer = createT
     res.json({ config: result.rows[0].config });
   }));
 
+  router.post('/agent/worlds', route(async (req, res) => {
+    const invalid = groupsError(req.body?.groups);
+    if (invalid) throw fail(400, invalid);
+    const { run, keyId } = await agentRun(req);
+    const saved = await pool.query(
+      `INSERT INTO lab_runs(id, key_id, name) VALUES ($1, $2, $3)
+       ON CONFLICT (key_id, name) DO UPDATE SET last_seen_at = now() RETURNING id`,
+      [randomUUID(), keyId, run],
+    );
+    const found = {};
+    for (const name of req.body.groups) {
+      found[name] = worlds.resolve(name, saved.rows[0].id);
+      if (!found[name]) throw fail(409, `Group ${name} is not running`);
+    }
+    res.json(found);
+  }));
+
   router.use((req, res, next) => {
     if (!password) return res.status(503).json({ error: 'Lab panel is disabled: set LAB_ADMIN_PASSWORD' });
     if (!pool) return res.status(503).json({ error: 'Lab panel is disabled: set DATABASE_URL and run pnpm db:migrate' });
@@ -107,7 +136,7 @@ export function labRouter({ pool, lab, password, flushMinutes, trainer = createT
       [req.params.id],
     );
     if (!result.rowCount) throw fail(404, 'Key not found or already revoked');
-    lab.disconnectKey(req.params.id);
+    await lab.disconnectKey(req.params.id);
     res.status(204).end();
   }));
 
@@ -136,45 +165,94 @@ export function labRouter({ pool, lab, password, flushMinutes, trainer = createT
 
   router.post('/runs/:id/start', route(async (req, res) => {
     if (!trainer.available) throw fail(503, 'Starting from the panel needs the trainer\'s Python in apps/lab/.venv or LAB_PYTHON');
-    const { rooms, model } = req.body ?? {};
-    if (!Array.isArray(rooms) || !rooms.length || rooms.length > 20) throw fail(400, 'Rooms must be a list of 1-20 port groups');
-    for (const { ports, sessions } of rooms) {
-      if (typeof ports !== 'string' || !PORTS.test(ports)) throw fail(400, 'Ports look like 3031-3046 or 3030,3035');
-      if (!Number.isInteger(sessions) || sessions < 1 || sessions > 32) throw fail(400, 'Sessions must be a whole number 1-32');
-    }
+    const { groups, model } = req.body ?? {};
+    const invalid = groupsError(groups);
+    if (invalid) throw fail(400, invalid);
+    const stopped = groups.find((name) => !worlds.group(name));
+    if (stopped) throw fail(409, `Group ${stopped} is not running`);
     if (model && !trainer.models().some((r) => r.run === model.run && r.files.includes(model.file))) {
       throw fail(400, 'Model must be a checkpoint listed by /models');
     }
     const { name, running } = await trainerRun(req.params.id);
-    const training = (await lab.live()).runs.some((r) => r.runId === req.params.id);
+    const training = lab.live().runs.some((r) => r.runId === req.params.id);
     if (running || training) throw fail(409, 'This run is already training');
-    const groups = rooms.map(({ ports, sessions }) => ({ ports, sessions }));
-    const pid = await trainer.start({ name, rooms: groups, ...(model && { model: { run: model.run, file: model.file } }) });
-    await pool.query('UPDATE lab_runs SET trainer = $2 WHERE id = $1', [req.params.id, JSON.stringify({ pid, rooms: groups })]);
-    res.json({ trainer: { pid, rooms: groups, running: true } });
+    const names = [...new Set(groups)];
+    const pid = await trainer.start({ name, groups: names, ...(model && { model: { run: model.run, file: model.file } }) });
+    await pool.query('UPDATE lab_runs SET trainer = $2 WHERE id = $1', [req.params.id, JSON.stringify({ pid, groups: names })]);
+    res.json({ trainer: { pid, groups: names, running: true } });
   }));
 
   router.get('/models', (req, res) => res.json(trainer.models()));
 
-  router.get('/rooms', route(async (req, res) => {
-    res.json({ firstPort: roomServers.firstPort, running: await roomServers.list() });
+  async function findGroup(id) {
+    const found = await pool.query('SELECT id, name, config, sessions FROM lab_groups WHERE id = $1', [id]);
+    if (!found.rowCount) throw fail(404, 'Group not found');
+    return found.rows[0];
+  }
+
+  router.get('/groups', route(async (req, res) => {
+    const result = await pool.query('SELECT id, name, config, sessions, created_at FROM lab_groups ORDER BY created_at');
+    res.json({
+      limits: LIMITS,
+      defaults: DEFAULTS,
+      groups: result.rows.map((group) => ({ ...group, running: worlds.running(group.id), worlds: worlds.state(group.id) })),
+    });
   }));
 
-  router.post('/rooms/start', route(async (req, res) => {
-    const { count, timescale } = req.body ?? {};
-    if (!Number.isInteger(count) || count < 1 || count > 40) throw fail(400, 'Rooms must be a whole number 1-40');
-    if (typeof timescale !== 'number' || !(timescale >= 0.25 && timescale <= 4)) throw fail(400, 'Timescale must be 0.25-4');
-    if ((await roomServers.list()).length) throw fail(409, 'Training rooms are already running');
-    const taken = await roomServers.taken(count);
-    if (taken) throw fail(409, `Port ${taken} is already in use`);
-    res.status(201).json({ pid: await roomServers.start({ count, timescale }), count, timescale });
+  router.post('/groups', route(async (req, res) => {
+    const { name, config, sessions } = req.body ?? {};
+    if (typeof name !== 'string' || !GROUP_NAME.test(name)) throw fail(400, `Group name must match ${GROUP_NAME}`);
+    const values = { ...DEFAULTS, ...config };
+    const invalid = configError(values, {}) || sessionsError(sessions);
+    if (invalid) throw fail(400, invalid);
+    const created = await pool.query(
+      'INSERT INTO lab_groups(id, name, config, sessions) VALUES ($1, $2, $3, $4) ON CONFLICT (name) DO NOTHING RETURNING id',
+      [randomUUID(), name, JSON.stringify(values), sessions],
+    );
+    if (!created.rowCount) throw fail(409, 'A group with that name already exists');
+    res.status(201).json({ id: created.rows[0].id });
   }));
 
-  router.post('/rooms/stop', route(async (req, res) => {
-    const running = await roomServers.list();
-    if (!running.length) throw fail(409, 'No training rooms are running');
-    if ((await lab.live()).runs.length) throw fail(409, 'Stop the trainers first: their sessions would lose the rooms');
-    for (const { group } of running) roomServers.stop(group);
+  // Parameters reach running worlds at once; processes only change while the group is stopped,
+  // because trainers read the group's layout when they start.
+  router.patch('/groups/:id', route(async (req, res) => {
+    const { config, sessions } = req.body ?? {};
+    const group = await findGroup(req.params.id);
+    const invalid = (config === undefined && sessions === undefined && 'Nothing to change')
+      || (config !== undefined && configError(config, group.config))
+      || (sessions !== undefined && sessionsError(sessions));
+    if (invalid) throw fail(400, invalid);
+    if (sessions !== undefined && worlds.running(group.id)) throw fail(409, 'Stop the group to change its processes');
+    const result = await pool.query(
+      `UPDATE lab_groups SET config = config || $2::jsonb, sessions = COALESCE($3::integer[], sessions) WHERE id = $1
+       RETURNING id, name, config, sessions`,
+      [group.id, JSON.stringify(config ?? {}), sessions ?? null],
+    );
+    if (config !== undefined && worlds.running(group.id)) worlds.setConfig(group.id, config);
+    res.json(result.rows[0]);
+  }));
+
+  router.post('/groups/:id/start', route(async (req, res) => {
+    const group = await findGroup(req.params.id);
+    if (worlds.running(group.id)) throw fail(409, 'The group is already running');
+    await pool.query('UPDATE lab_groups SET running = true WHERE id = $1', [group.id]);
+    worlds.start(group);
+    res.status(204).end();
+  }));
+
+  router.post('/groups/:id/stop', route(async (req, res) => {
+    const group = await findGroup(req.params.id);
+    if (!worlds.running(group.id)) throw fail(409, 'The group is not running');
+    if (worlds.state(group.id).some((world) => world.agents)) throw fail(409, 'Stop the trainers first: their sessions would lose the worlds');
+    await pool.query('UPDATE lab_groups SET running = false WHERE id = $1', [group.id]);
+    worlds.stop(group.id);
+    res.status(204).end();
+  }));
+
+  router.delete('/groups/:id', route(async (req, res) => {
+    if (worlds.running(req.params.id)) throw fail(409, 'Stop the group first');
+    const result = await pool.query('DELETE FROM lab_groups WHERE id = $1', [req.params.id]);
+    if (!result.rowCount) throw fail(404, 'Group not found');
     res.status(204).end();
   }));
 
@@ -241,7 +319,7 @@ export function labRouter({ pool, lab, password, flushMinutes, trainer = createT
     res.json(result.rows);
   }));
 
-  router.get('/live', route(async (req, res) => res.json(await lab.live())));
+  router.get('/live', (req, res) => res.json(lab.live()));
 
   router.use((error, req, res, next) => {
     if (error.status) return res.status(error.status).json({ error: error.message });

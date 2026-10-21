@@ -1,10 +1,12 @@
+import { once } from 'node:events';
 import { mkdtempSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { applyUpdate, loadEnv, parsePorts } from './pixel-snake-lab.js';
+import { applyUpdate, findWorlds, loadEnv } from './pixel-snake-lab.js';
 
 describe('lab/pixel-snake-lab', () => {
   test('loadEnv', () => {
@@ -20,10 +22,24 @@ describe('lab/pixel-snake-lab', () => {
     assert.equal(process.env.PIXEL_SNAKE_LAB_URL, 'from-shell');
   });
 
-  test('parsePorts', () => {
-    assert.deepEqual(parsePorts('3030'), [3030]);
-    assert.deepEqual(parsePorts('3031-3034'), [3031, 3032, 3033, 3034]);
-    assert.deepEqual(parsePorts('3030,3035-3036'), [3030, 3035, 3036]);
+  test('findWorlds', async () => {
+    const worlds = { quiet: [{ url: 'http://127.0.0.1:51000', token: 'run-1.signed', sessions: 2 }] };
+    const received = [];
+    const server = createServer(async (req, res) => {
+      let body = '';
+      for await (const chunk of req) body += chunk;
+      received.push([req.url, req.headers.authorization, JSON.parse(body)]);
+      const running = JSON.parse(body).groups[0] === 'quiet';
+      res.writeHead(running ? 200 : 409, { 'Content-Type': 'application/json' })
+        .end(JSON.stringify(running ? worlds : { error: 'Group crowded is not running' }));
+    }).listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    process.env.PIXEL_SNAKE_LAB_URL = `http://127.0.0.1:${server.address().port}`;
+
+    assert.deepEqual(await findWorlds({ run: 'ppo-1', groups: ['quiet'], key: 'psl_x' }), worlds);
+    assert.deepEqual(received, [['/api/lab/agent/worlds', 'Bearer psl_x', { run: 'ppo-1', groups: ['quiet'] }]]);
+    await assert.rejects(findWorlds({ run: 'ppo-1', groups: ['crowded'], key: 'psl_x' }), /Group crowded is not running/);
+    server.close();
   });
 
   test('applyUpdate', () => {

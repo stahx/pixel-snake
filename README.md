@@ -23,12 +23,13 @@ pnpm install
 ```
 
 ## Run
-Build the frontend once before starting (the RL lab panel uses Vite):
+Build once before starting (the game CSS and the RL lab panel):
 ```
 pnpm build
 ```
 
-Development rebuilds both the game CSS and the Vue lab panel:
+Development rebuilds both the game CSS and the Vue lab panel and runs the game
+under nodemon:
 ```
 pnpm dev
 ```
@@ -53,63 +54,63 @@ the session ends (12 hours or a backend restart).
 - `apps/backend` — game server (Express, Socket.IO, game loop)
 - `apps/frontend` — canvas-based client (plain JS, Tailwind for UI chrome)
 - `apps/shared` — shared code between the two
-- `apps/lab` — Python (`py/`) and JavaScript (`js/`) SDKs and PPO trainers for the live game
+- `apps/lab-server` — RL lab: panel, API, Postgres, and the training worlds it runs
+- `apps/lab` — Python (`py/`) and JavaScript (`js/`) SDKs and PPO trainers
 
 See [CHANGELOG.md](./CHANGELOG.md) for recent changes.
 
 ## RL lab
 
-Trainers written in Python play the live game through the `/lab` Socket.IO
-namespace. Each connection needs a lab key and becomes a normal snake that
-joins immediately, sees only its fog-of-war view and acts through the same
-events as the browser. Nothing is stored per step: the server records
-progress windows (episode count, average/best score, survival, causes of
-death) and the averaged metrics the trainer sends with `game.log(...)`.
-See [apps/lab/README.md](./apps/lab/README.md) for writing a trainer.
-
-The panel at `/lab/` (admin login) manages keys and shows learning curves
-and the agents playing right now.
+The lab is its own app (`apps/lab-server`), separate from the public game. It
+runs training worlds: Node child processes, each one a GameServer from the game
+package with its own map and bots, listening on 127.0.0.1 on a port the OS
+picks. Worlds take only trainer agents holding a token from the lab, serve no
+game client and never touch the database; they report episodes, trainer
+metrics and live state to the lab over IPC. The lab aggregates progress
+windows (episode count, average/best score, survival, causes of death, the
+metrics trainers send with `game.log(...)`) and writes them to Postgres.
+Nothing is stored per step. See [apps/lab/README.md](./apps/lab/README.md) for
+writing a trainer.
 
 With Docker running:
 
 ```
 pnpm db:up
+cp apps/lab-server/.env.example apps/lab-server/.env   # set LAB_ADMIN_PASSWORD
+pnpm db:migrate
+pnpm build
+pnpm lab
 ```
 
-In `apps/backend/.env` (keep your existing PORT/HOST):
+The panel is at http://127.0.0.1:3100 (`LAB_PORT`; the lab listens on
+127.0.0.1 only). Log in with `LAB_ADMIN_PASSWORD`, create a key for each
+machine you train from, then a group under Grupy. `LAB_FLUSH_MINUTES` sets the
+progress window, `LAB_PYTHON` the Python that starts trainers from the panel
+(default `apps/lab/.venv/bin/python`).
 
-```
-DATABASE_URL=postgres://pixel_snake:pixel_snake_local@127.0.0.1:5433/pixel_snake
-LAB_ADMIN_PASSWORD=<a long random password>
-LAB_FLUSH_MINUTES=5
-```
+`pnpm dev` rebuilds the panel but does not run the lab, since a restart on every
+edit would restart its worlds: run `pnpm lab` in its own terminal and restart it
+after server changes.
 
-Then run `pnpm db:migrate`, restart the backend, log in at `/lab/` and
-create a key for each machine you train from. The game runs without these
-variables; the lab namespace and panel stay disabled until both
-`DATABASE_URL` and `LAB_ADMIN_PASSWORD` are set.
+### Groups
 
-### Training rooms
+A group is a set of worlds with the same settings (game speed, bots, food,
+vision radius, speeds) and a list of processes, each with the number of trainer
+sessions it takes. Saved settings reach a running group's worlds at once;
+processes change while the group is stopped. A trainer started with
+`--groups quiet,crowded` asks the lab for every world of those groups, opens
+the sessions each world asks for, and asks again on every reconnect, because a
+world that dies is restarted by the lab on a new port with a new token. Groups
+that were running start again when the lab starts. Stopping a group needs its
+trainers stopped first.
 
-`pnpm lab:rooms 8` starts 8 more backends on ports 3031–3038 (first port:
-`LAB_FIRST_ROOM_PORT`). Each room is its own process with its own map and
-bots, so rooms use separate CPU cores; open `http://127.0.0.1:3033` to watch
-one. Every room with at least one player or agent runs `BOTS` bots (default
-10, e.g. `BOTS=5 pnpm lab:rooms 8`), however many agents join. All rooms share the
-database, so the panel on any port shows every run and every live session,
-whichever room it plays in. Revoking a key disconnects its sessions in all
-rooms within a few seconds.
+The game and its bots count time in ticks, so a higher game speed is the same
+game played faster: agents collect experience sooner and play the same at
+normal speed. It helps while the machine has CPU to spare; past that, worlds
+and trainer sessions fall behind.
 
-`pnpm lab:rooms 20 1.5` runs the rooms at 1.5 times the tick rate (`TIMESCALE`).
-The game and its bots count time in ticks, so it is the same game played
-faster: agents collect experience sooner and play the same at normal speed. It
-helps while the machine has CPU to spare; past that, rooms and trainer sessions
-fall behind. The panel's Pokoje tab starts and stops the rooms too.
+Keys are stored as SHA-256 hashes and can be revoked from the panel, which
+disconnects the trainers using them from every world.
 
-On a public deployment serve the game over HTTPS/WSS: the lab key travels
-in the Socket.IO handshake and the panel session in a cookie. Keys are
-stored as SHA-256 hashes and can be revoked from the panel, which also
-disconnects trainers using them.
-
-`pnpm test` runs the backend specs; `cd apps/lab/py && pytest` and
-`pnpm --filter @pixel-snake/lab-js test` run the lab specs.
+`pnpm test` runs the game and lab-server specs; `cd apps/lab/py && pytest` and
+`pnpm --filter @pixel-snake/lab-js test` run the trainer specs.

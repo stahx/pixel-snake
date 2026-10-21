@@ -32,10 +32,19 @@ const PAGE_SIZE = 10;
 const LOG_LINES = 2000;
 const AGENT_COLUMNS = [
   { key: 'id', label: 'Agent' },
-  { key: 'room', label: 'Serwer' },
+  { key: 'world', label: 'Świat' },
   { key: 'alive', label: 'Stan' },
   { key: 'score', label: 'Wynik' },
   { key: 'ticks', label: 'Czas życia' },
+];
+const PARAMETERS = [
+  ['TIMESCALE', 'Tempo gry'],
+  ['BOTS', 'Boty'],
+  ['POINTS_AMOUNT', 'Jedzenie'],
+  ['FOG_RADIUS_MIN', 'Widok min'],
+  ['FOG_RADIUS_MAX', 'Widok max'],
+  ['NORMAL_SPEED', 'Prędkość'],
+  ['BOOST_SPEED', 'Prędkość boost'],
 ];
 
 const view = ref('loading');
@@ -57,16 +66,16 @@ const compareAxis = ref('time');
 const runAxis = ref('time');
 const agentSort = ref({ key: 'score', desc: true });
 const page = ref(0);
-const preview = ref(null);
 const draft = ref({});
 const logsOpen = ref(false);
 const logs = ref([]);
 const logBox = ref(null);
 const newRun = ref(null);
-const startRooms = ref([]);
+const startGroups = ref([]);
 const models = ref([]);
-const roomServers = ref({ firstPort: 3031, running: [] });
-const roomsDraft = ref({ count: 20, timescale: 1.5 });
+const groupData = ref({ limits: {}, defaults: {}, groups: [] });
+const groupDrafts = ref({});
+const newGroup = ref(null);
 const startModel = ref('');
 const stopping = ref(null);
 
@@ -102,7 +111,7 @@ async function action(work) {
 }
 
 async function loadRuns() {
-  [runs.value, live.value, models.value] = await Promise.all([api('/runs'), api('/live'), api('/models')]);
+  [runs.value, live.value, models.value, groupData.value] = await Promise.all([api('/runs'), api('/live'), api('/models'), api('/groups')]);
   if (!runId.value && runs.value.length) runId.value = runs.value[0].id;
   if (runId.value) progress.value = await api(`/runs/${runId.value}/progress`);
 }
@@ -111,7 +120,7 @@ async function open(target) {
   view.value = target;
   if (target === 'runs') await loadRuns();
   else if (target === 'compare') await loadCompare();
-  else if (target === 'rooms') roomServers.value = await api('/rooms');
+  else if (target === 'groups') groupData.value = await api('/groups');
   else keys.value = await api('/keys');
 }
 
@@ -164,18 +173,55 @@ const revokeKey = (key) => action(async () => {
   await api(`/keys/${key.id}`, { method: 'DELETE' });
   keys.value = await api('/keys');
 });
-const startRoomServers = () => action(async () => {
-  await api('/rooms/start', { method: 'POST', body: roomsDraft.value });
-  roomServers.value = await api('/rooms');
-});
-const stopRoomServers = () => action(async () => {
-  if (!window.confirm('Zatrzymać pokoje treningowe?')) return;
-  await api('/rooms/stop', { method: 'POST' });
-  for (let i = 0; i < 20 && roomServers.value.running.length; i++) {
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    roomServers.value = await api('/rooms');
+const savedGroup = (group) => JSON.stringify([group.config, group.sessions]);
+watch(() => groupData.value.groups, (groups) => {
+  for (const group of groups) {
+    if (groupDrafts.value[group.id]?.saved === savedGroup(group)) continue;
+    groupDrafts.value[group.id] = { saved: savedGroup(group), config: { ...group.config }, sessions: [...group.sessions] };
   }
 });
+const groupCards = computed(() => [
+  ...groupData.value.groups.map((group) => ({ group, draft: groupDrafts.value[group.id] })),
+  ...(newGroup.value ? [{ group: null, draft: newGroup.value }] : []),
+].filter((card) => card.draft));
+const changedParameters = (card) => PARAMETERS.map(([name]) => name).filter((name) => card.draft.config[name] !== card.group.config[name]);
+const sessionsChanged = (card) => JSON.stringify(card.draft.sessions) !== JSON.stringify(card.group.sessions);
+const groupChanged = (card) => changedParameters(card).length > 0 || sessionsChanged(card);
+const groupAction = (work) => action(async () => {
+  await work();
+  groupData.value = await api('/groups');
+});
+const startNewGroup = () => {
+  const names = groupData.value.groups.map((group) => group.name);
+  let next = groupData.value.groups.length + 1;
+  while (names.includes(String(next))) next++;
+  newGroup.value = { name: String(next), config: { ...groupData.value.defaults }, sessions: [1] };
+};
+const createGroup = () => groupAction(async () => {
+  await api('/groups', { method: 'POST', body: newGroup.value });
+  newGroup.value = null;
+});
+const saveGroup = (card) => groupAction(async () => {
+  const config = Object.fromEntries(changedParameters(card).map((name) => [name, card.draft.config[name]]));
+  const body = {
+    ...(Object.keys(config).length && { config }),
+    ...(sessionsChanged(card) && { sessions: card.draft.sessions }),
+  };
+  await api(`/groups/${card.group.id}`, { method: 'PATCH', body });
+});
+const resetGroup = (card) => {
+  groupDrafts.value[card.group.id] = { saved: savedGroup(card.group), config: { ...card.group.config }, sessions: [...card.group.sessions] };
+};
+const startGroup = (group) => groupAction(() => api(`/groups/${group.id}/start`, { method: 'POST' }));
+const stopGroup = (group) => groupAction(async () => {
+  if (!window.confirm(`Zatrzymać grupę „${group.name}”?`)) return;
+  await api(`/groups/${group.id}/stop`, { method: 'POST' });
+});
+const deleteGroup = (group) => groupAction(async () => {
+  if (!window.confirm(`Usunąć grupę „${group.name}”?`)) return;
+  await api(`/groups/${group.id}`, { method: 'DELETE' });
+});
+const groupSummary = (group) => `światy: ${group.sessions.length} · sesje: ${group.sessions.reduce((sum, count) => sum + count, 0)}`;
 const copyKey = async () => {
   await navigator.clipboard.writeText(newKey.value.key);
   copied.value = true;
@@ -204,19 +250,16 @@ const createRun = () => action(async () => {
   runId.value = id;
   await loadRuns();
 });
-const roomsOf = (trainer) => trainer.rooms ?? [{ ports: trainer.ports, sessions: trainer.sessions }];
 const resetDraft = () => { draft.value = { ...run.value?.config, ...run.value?.config_pending }; };
 watch(() => JSON.stringify([run.value?.id, run.value?.config, run.value?.config_pending]), resetDraft, { immediate: true });
 watch(() => run.value?.id, () => {
   startModel.value = '';
-  startRooms.value = run.value?.trainer
-    ? roomsOf(run.value.trainer).map((room) => ({ ...room }))
-    : [{ ports: '3031-3040', sessions: 1 }, { ports: '3041-3050', sessions: 10 }];
+  startGroups.value = [...(run.value?.trainer?.groups ?? [])];
 }, { immediate: true });
 const startTrainer = () => action(async () => {
   const [modelRun, file] = startModel.value.split(/\/(?=[^/]+$)/);
   const body = {
-    rooms: startRooms.value.map((room) => ({ ports: room.ports.trim(), sessions: room.sessions })),
+    groups: startGroups.value,
     ...(startModel.value && { model: { run: modelRun, file } }),
   };
   stopping.value = null;
@@ -260,47 +303,23 @@ watch(runId, () => { logs.value = []; if (logsOpen.value) action(loadLogs); });
 const logTime = (at) => new Date(at).toLocaleTimeString('pl-PL');
 const liveRun = computed(() => live.value.runs.find((r) => r.runId === runId.value));
 const isLive = (id) => live.value.runs.some((r) => r.runId === id);
-const serverUrl = (port) => `${location.protocol}//${location.hostname}:${port}`;
-const shortId = (agent) => agent.id?.slice(0, 6) ?? '—';
-const previewUrl = (agent) => `${serverUrl(agent.room)}/?follow=${encodeURIComponent(agent.id)}`;
-
-const liveAgents = computed(() => (liveRun.value?.agents ?? []).map((agent, index) => ({
-  ...agent,
-  key: agent.id ?? `${agent.room}:${index}`,
-})));
-const agentOrder = ref([]);
-
-function orderAgents() {
-  const { key, desc } = agentSort.value;
-  const direction = desc ? -1 : 1;
-  agentOrder.value = [...liveAgents.value]
-    .sort((a, b) => (a[key] > b[key] ? direction : a[key] < b[key] ? -direction : 0))
-    .map((agent) => agent.key);
-}
-watch(liveAgents, () => { if (!preview.value) orderAgents(); }, { immediate: true });
+const shortId = (agent) => agent.id.slice(0, 6);
 
 const sortedAgents = computed(() => {
-  const byKey = new Map(liveAgents.value.map((agent) => [agent.key, agent]));
-  const ordered = agentOrder.value.filter((key) => byKey.has(key));
-  const added = [...byKey.keys()].filter((key) => !agentOrder.value.includes(key));
-  return [...ordered, ...added].map((key) => byKey.get(key));
+  const { key, desc } = agentSort.value;
+  const direction = desc ? -1 : 1;
+  return [...(liveRun.value?.agents ?? [])].sort((a, b) => (a[key] > b[key] ? direction : a[key] < b[key] ? -direction : 0));
 });
 const pageCount = computed(() => Math.max(1, Math.ceil(sortedAgents.value.length / PAGE_SIZE)));
 const pageAgents = computed(() => sortedAgents.value.slice(page.value * PAGE_SIZE, (page.value + 1) * PAGE_SIZE));
 watch(pageCount, (count) => { page.value = Math.min(page.value, count - 1); });
-watch(runId, () => { page.value = 0; preview.value = null; });
+watch(runId, () => { page.value = 0; });
 
 function sortAgents(key) {
   const { key: current, desc } = agentSort.value;
   agentSort.value = { key, desc: key === current ? !desc : ['alive', 'score', 'ticks'].includes(key) };
   page.value = 0;
-  orderAgents();
 }
-function togglePreview(agent) {
-  preview.value = preview.value === agent.key ? null : agent.key;
-  if (!preview.value) orderAgents();
-}
-const closePreview = (event) => { if (event.key === 'Escape' && preview.value) togglePreview({ key: preview.value }); };
 const rows = computed(() => progress.value.filter((r) => r.episodes > 0));
 const metricNames = computed(() => [...new Set(progress.value.flatMap((r) => Object.keys(r.metrics)))].sort());
 
@@ -354,7 +373,7 @@ const line = (name, color, data) => ({
   lineStyle: { width: 2, color, cap: 'round', join: 'round' },
   itemStyle: { color, borderColor: INK.surface, borderWidth: 2 },
 });
-// Rooms on older code record no starts, so a silence of several windows also counts as a break.
+// Runs trained before trainer starts were recorded have no starts, so a silence of several windows also counts as a break.
 const breaks = computed(() => {
   const windowMs = live.value.flushMinutes * 60_000;
   const times = rows.value.map((r) => new Date(r.recorded_at).getTime());
@@ -541,20 +560,20 @@ onMounted(async () => {
     }
   }
   timer = setInterval(async () => {
-    if (view.value !== 'runs' || busy.value) return;
+    if (busy.value || !['runs', 'groups'].includes(view.value)) return;
     try {
-      [live.value, runs.value] = await Promise.all([api('/live'), api('/runs')]);
+      if (view.value === 'groups') {
+        groupData.value = await api('/groups');
+        return;
+      }
+      [live.value, runs.value, groupData.value] = await Promise.all([api('/live'), api('/runs'), api('/groups')]);
       if (logsOpen.value && runId.value) await loadLogs();
     } catch (e) {
       error.value = e.message;
     }
   }, 2000);
 });
-onMounted(() => window.addEventListener('keydown', closePreview));
-onUnmounted(() => {
-  clearInterval(timer);
-  window.removeEventListener('keydown', closePreview);
-});
+onUnmounted(() => clearInterval(timer));
 </script>
 
 <template>
@@ -578,7 +597,7 @@ onUnmounted(() => {
       <nav>
         <button :class="{ active: view === 'runs' }" @click="action(() => open('runs'))">Runy</button>
         <button :class="{ active: view === 'compare' }" @click="action(() => open('compare'))">Porównanie</button>
-        <button :class="{ active: view === 'rooms' }" @click="action(() => open('rooms'))">Pokoje</button>
+        <button :class="{ active: view === 'groups' }" @click="action(() => open('groups'))">Grupy</button>
         <button :class="{ active: view === 'keys' }" @click="action(() => open('keys'))">Klucze</button>
       </nav>
       <button class="ghost" @click="logout">Wyloguj</button>
@@ -698,7 +717,7 @@ onUnmounted(() => {
             <h1>{{ run.name }}</h1>
             <p class="muted">Klucz {{ run.key_name }} · ostatnio {{ date(run.last_seen_at) }}</p>
             <p v-if="!run.config && run.config_pending" class="muted">
-              Czeka na pierwszy start: <code>python py/ppo_agent.py --run {{ run.name }}</code> z kluczem {{ run.key_name }}.
+              Czeka na pierwszy start: <code>python py/ppo_agent.py --groups &lt;grupy&gt; --run {{ run.name }}</code> z kluczem {{ run.key_name }}.
             </p>
           </div>
 
@@ -707,7 +726,7 @@ onUnmounted(() => {
               <span class="state">
                 <span class="dot" :class="{ on: isLive(run.id) }"></span>
                 {{ stopping === run.id ? 'Zatrzymuje się, zapisuje checkpoint…' : isLive(run.id) ? 'Trenuje' : 'Startuje…' }}
-                <span class="muted">· {{ roomsOf(run.trainer).map((room) => `${room.ports}: ${room.sessions} sesji na pokój`).join(' · ') }}</span>
+                <span v-if="run.trainer.groups" class="muted">· grupy {{ run.trainer.groups.join(', ') }}</span>
               </span>
               <button class="ghost" :disabled="busy || stopping === run.id" @click="stopTrainer">Stop</button>
             </template>
@@ -715,15 +734,14 @@ onUnmounted(() => {
               <span class="dot on"></span> Trenuje z terminala <span class="muted">· zatrzymasz go Ctrl+C w tamtym terminalu</span>
             </p>
             <form v-else class="trainer-form" @submit.prevent="startTrainer">
-              <div v-for="(room, index) in startRooms" :key="index" class="room-group">
-                <label>Porty
-                  <input v-model="room.ports" placeholder="3031-3040" required>
+              <fieldset class="group-pick">
+                <legend>Grupy</legend>
+                <label v-for="group in groupData.groups" :key="group.id" class="pick" :class="{ picked: startGroups.includes(group.name) }">
+                  <input v-model="startGroups" type="checkbox" :value="group.name" :disabled="!group.running">
+                  {{ group.name }} <span class="muted">{{ group.running ? groupSummary(group) : 'zatrzymana' }}</span>
                 </label>
-                <label>Sesje na pokój
-                  <input v-model.number="room.sessions" type="number" min="1" max="32" step="1" required>
-                </label>
-                <button v-if="startRooms.length > 1" type="button" class="ghost" @click="startRooms.splice(index, 1)">Usuń</button>
-              </div>
+                <p v-if="!groupData.groups.length" class="muted">Brak grup. Utwórz je w zakładce Grupy.</p>
+              </fieldset>
               <label v-if="models.length" class="model-pick">Model początkowy
                 <select v-model="startModel">
                   <option value="">{{ hasCheckpoints ? 'Ostatni checkpoint tego runu' : 'Nowy model' }}</option>
@@ -732,10 +750,10 @@ onUnmounted(() => {
                   </optgroup>
                 </select>
               </label>
-              <button type="button" class="ghost" @click="startRooms.push({ ports: '', sessions: 1 })">+ grupa</button>
-              <button class="primary" :disabled="busy">Start</button>
+              <button class="primary" :disabled="busy || !startGroups.length">Start</button>
               <p class="muted">
-                Uruchamia <code>python py/ppo_agent.py --run {{ run.name }}{{ startModel && ` --model py/checkpoints/${startModel}` }}</code> na tej maszynie z parametrami poniżej.
+                Uruchamia <code>python py/ppo_agent.py --groups {{ startGroups.join(',') || '…' }} --run {{ run.name }}{{ startModel && ` --model py/checkpoints/${startModel}` }}</code> na tej maszynie z parametrami poniżej.
+                Każdy świat grupy dostaje tyle sesji, ile ustawia grupa.
                 <template v-if="startModel && hasCheckpoints">Wagi i licznik update'ów z wybranego checkpointu zastąpią postęp tego runu przy następnym zapisie.</template>
                 Wyjście trenera, także błędy sprzed połączenia: <code>apps/lab/py/checkpoints/{{ run.name }}/trainer.log</code>.
               </p>
@@ -761,33 +779,16 @@ onUnmounted(() => {
                         {{ column.label }}<span v-if="agentSort.key === column.key">{{ agentSort.desc ? ' ↓' : ' ↑' }}</span>
                       </button>
                     </th>
-                    <th><span class="sr-only">Podgląd</span></th>
                   </tr>
                 </thead>
                 <tbody>
-                  <template v-for="agent in pageAgents" :key="agent.key">
-                  <tr :class="{ previewing: preview === agent.key }">
+                  <tr v-for="agent in pageAgents" :key="agent.id">
                     <td><code>{{ shortId(agent) }}</code></td>
-                    <td><a :href="serverUrl(agent.room)" target="_blank" rel="noopener">{{ serverUrl(agent.room) }}</a></td>
+                    <td>{{ agent.world }}</td>
                     <td>{{ agent.alive ? 'Żyje' : 'Czeka na respawn' }}</td>
                     <td>{{ number(agent.score) }}</td>
                     <td>{{ number(seconds(agent.ticks)) }} s</td>
-                    <td>
-                      <button class="ghost small" :disabled="!agent.id" :aria-expanded="preview === agent.key" @click="togglePreview(agent)">
-                        {{ preview === agent.key ? 'Zwiń' : 'Podgląd' }}
-                      </button>
-                    </td>
                   </tr>
-                  <tr v-if="preview === agent.key" class="preview-row">
-                    <td :colspan="AGENT_COLUMNS.length + 1">
-                      <iframe :src="previewUrl(agent)" :title="`Podgląd agenta ${shortId(agent)}`"></iframe>
-                      <p class="muted">
-                        Widok agenta: tylko to, co jest w jego mgle. Kolejność tabeli stoi, dopóki podgląd jest otwarty.
-                        <a :href="previewUrl(agent)" target="_blank" rel="noopener">Otwórz w nowej karcie</a>
-                      </p>
-                    </td>
-                  </tr>
-                  </template>
                 </tbody>
               </table>
             </div>
@@ -893,29 +894,82 @@ onUnmounted(() => {
         </div>
       </section>
 
-      <section v-else-if="view === 'rooms'" class="rooms">
-        <h1>Pokoje treningowe</h1>
-        <p class="muted">Osobne serwery gry dla trenerów, od portu {{ roomServers.firstPort }}. Timescale przyspiesza grę: mechanika i boty liczą czas w tickach, więc agenci grają w tę samą grę, tylko szybciej.</p>
+      <section v-else-if="view === 'groups'" class="groups">
+        <h1>Grupy światów</h1>
+        <p class="muted">
+          Grupa to światy gry z tymi samymi ustawieniami. Każdy świat to osobny proces z własną mapą i botami, więc światy liczą się na osobnych rdzeniach.
+          Trener z <code>--groups</code> dostaje adres i token każdego świata oraz liczbę sesji, które ma w nim grać, a po restarcie świata pyta o nowy adres.
+          Tempo gry przyspiesza grę: mechanika i boty liczą czas w tickach, więc agenci grają w tę samą grę, tylko szybciej.
+        </p>
 
-        <article v-for="r in roomServers.running" :key="r.pid" class="card key-row">
-          <span>
-            {{ r.count }} pokoi · porty {{ roomServers.firstPort }}–{{ roomServers.firstPort + r.count - 1 }} ·
-            timescale {{ r.timescale ? `${number(r.timescale)}×` : 'z TIMESCALE (domyślnie 1×)' }}
-            <span class="muted">· PID {{ r.pid }}</span>
-          </span>
-          <button class="ghost" :disabled="busy" @click="stopRoomServers">Stop</button>
-        </article>
+        <form v-for="card in groupCards" :key="card.group?.id ?? 'new'" class="card group" @submit.prevent="card.group ? saveGroup(card) : createGroup()">
+          <div class="group-head">
+            <template v-if="card.group">
+              <h2>{{ card.group.name }}</h2>
+              <span class="state"><span class="dot" :class="{ on: card.group.running }"></span>{{ card.group.running ? 'Działa' : 'Zatrzymana' }}</span>
+              <button v-if="card.group.running" type="button" class="ghost" :disabled="busy" @click="stopGroup(card.group)">Stop</button>
+              <template v-else>
+                <button type="button" class="primary" :disabled="busy || groupChanged(card)" @click="startGroup(card.group)">Start</button>
+                <button type="button" class="ghost" :disabled="busy" @click="deleteGroup(card.group)">Usuń</button>
+              </template>
+            </template>
+            <label v-else class="group-name">Nazwa nowej grupy
+              <input v-model="card.draft.name" maxlength="40" pattern="[\w.\-]+" placeholder="np. quiet" required autofocus>
+            </label>
+          </div>
 
-        <form v-if="!roomServers.running.length" class="card key-form" @submit.prevent="startRoomServers">
-          <label>Liczba pokoi
-            <input v-model.number="roomsDraft.count" type="number" min="1" max="40" step="1" required>
-          </label>
-          <label>Timescale
-            <input v-model.number="roomsDraft.timescale" type="number" min="0.25" max="4" step="0.25" required>
-          </label>
-          <button class="primary" :disabled="busy">Start</button>
+          <div v-if="card.group?.running" class="table-scroll">
+            <table>
+              <thead><tr><th>Świat</th><th>Port</th><th>Ticki/s</th><th>Krok</th><th>Sesje</th></tr></thead>
+              <tbody>
+                <tr v-for="(world, index) in card.group.worlds" :key="index">
+                  <td>#{{ index + 1 }} <span class="muted">PID {{ world.pid }}</span></td>
+                  <td>{{ world.port ?? 'restart…' }}</td>
+                  <td>{{ number(world.tps) }}</td>
+                  <td>{{ world.stepMs == null ? '—' : `${number(world.stepMs)} ms` }}</td>
+                  <td>{{ world.agents }} / {{ card.group.sessions[index] }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="params-grid">
+            <label v-for="[name, label] in PARAMETERS" :key="name" :class="{ changed: card.group && card.draft.config[name] !== card.group.config[name] }">{{ label }}
+              <input
+                v-model.number="card.draft.config[name]" type="number" required
+                :min="groupData.limits[name][0]" :max="groupData.limits[name][1]" :step="groupData.limits[name][2] ? 1 : 'any'"
+              >
+            </label>
+          </div>
+
+          <fieldset class="processes" :disabled="card.group?.running">
+            <legend>Procesy · sesje trenera w każdym</legend>
+            <label v-for="(count, index) in card.draft.sessions" :key="index">#{{ index + 1 }}
+              <input v-model.number="card.draft.sessions[index]" type="number" min="1" max="32" step="1" required>
+            </label>
+            <button type="button" class="ghost" @click="card.draft.sessions.push(1)">+ proces</button>
+            <button v-if="card.draft.sessions.length > 1" type="button" class="ghost" @click="card.draft.sessions.pop()">− proces</button>
+          </fieldset>
+
+          <div class="params-actions">
+            <template v-if="card.group">
+              <button class="primary" :disabled="busy || !groupChanged(card)">Zapisz</button>
+              <button type="button" class="ghost" :disabled="!groupChanged(card)" @click="resetGroup(card)">Odrzuć</button>
+            </template>
+            <template v-else>
+              <button class="primary" :disabled="busy">Utwórz grupę</button>
+              <button type="button" class="ghost" @click="newGroup = null">Anuluj</button>
+            </template>
+          </div>
+          <p class="muted">
+            {{ card.group?.running
+              ? 'Zapisane ustawienia trafiają do działających światów od razu. Procesy zmienisz po zatrzymaniu grupy, a trenerzy zobaczą je po swoim restarcie.'
+              : 'Ustawienia i procesy zaczną działać po starcie grupy.' }}
+          </p>
         </form>
-        <p class="muted">Stop działa jak Ctrl+C, także dla pokoi uruchomionych z terminala. Najpierw zatrzymaj trenujące runy, bo straciłyby połączenie. Wyższy timescale pomaga, dopóki starcza CPU.</p>
+
+        <button v-if="!newGroup" class="new-group" :disabled="busy" @click="startNewGroup">+ Nowa grupa</button>
+        <p class="muted">Działające grupy wstają same po restarcie labu. Świat, który padnie, lab uruchamia ponownie na nowym porcie.</p>
       </section>
 
       <section v-else class="keys">

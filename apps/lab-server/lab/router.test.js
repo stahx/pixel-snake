@@ -8,6 +8,8 @@ import { labRouter } from './router.js';
 
 const PASSWORD = 'correct horse';
 const KEY_ID = '7f8e1d2c-3b4a-4c5d-8e9f-0a1b2c3d4e5f';
+const GROUP_ID = '5b0c9a1e-6d7f-4a8b-9c0d-1e2f3a4b5c6d';
+const DEFAULTS = { TIMESCALE: 1, BOTS: 10, POINTS_AMOUNT: 400, FOG_RADIUS_MIN: 300, FOG_RADIUS_MAX: 2500, NORMAL_SPEED: 1.3, BOOST_SPEED: 2.8 };
 
 let server;
 let base;
@@ -17,9 +19,9 @@ let disconnected;
 let trainerCalls;
 let runningPid;
 let liveRuns;
-let roomsCalls;
-let roomsRunning;
-let takenPort;
+let worldCalls;
+let runningGroups;
+let worldStates;
 
 const pool = {
   query: async (sql, params) => {
@@ -35,12 +37,14 @@ const trainer = {
   stop: (pid) => trainerCalls.push(['stop', pid]),
   models: () => [{ run: 'slither-v7', files: ['latest.pt', 'update-7300.pt'] }],
 };
-const roomServers = {
-  firstPort: 3031,
-  list: async () => roomsRunning,
-  taken: async () => takenPort,
-  start: async (options) => { roomsCalls.push(['start', options]); return 777; },
-  stop: (group) => roomsCalls.push(['stop', group]),
+const worlds = {
+  running: (id) => runningGroups.has(id),
+  group: (name) => [...runningGroups.values()].find((group) => group.name === name),
+  resolve: (name, runId) => worlds.group(name) && [{ url: 'http://127.0.0.1:51000', token: `${runId}.signed`, sessions: 2 }],
+  state: (id) => worldStates[id] ?? [],
+  start: (group) => worldCalls.push(['start', group]),
+  stop: (id) => worldCalls.push(['stop', id]),
+  setConfig: (id, values) => worldCalls.push(['setConfig', id, values]),
 };
 
 const request = (path, { method = 'GET', body, cookie, key } = {}) => fetch(base + path, {
@@ -56,7 +60,7 @@ const login = async () => {
 describe('lab/router', () => {
   before(async () => {
     const app = express();
-    app.use('/api/lab', labRouter({ pool, lab, password: PASSWORD, flushMinutes: 5, trainer, roomServers }));
+    app.use('/api/lab', labRouter({ pool, lab, worlds, password: PASSWORD, flushMinutes: 5, trainer }));
     server = app.listen(0, '127.0.0.1');
     await once(server, 'listening');
     base = `http://127.0.0.1:${server.address().port}/api/lab`;
@@ -69,9 +73,9 @@ describe('lab/router', () => {
     trainerCalls = [];
     runningPid = null;
     liveRuns = [];
-    roomsCalls = [];
-    roomsRunning = [];
-    takenPort = null;
+    worldCalls = [];
+    runningGroups = new Map();
+    worldStates = {};
   });
 
   test('POST /login', async () => {
@@ -221,66 +225,170 @@ describe('lab/router', () => {
   test('POST /runs/:id/start', async () => {
     const cookie = await login();
     const start = (body) => request(`/runs/${KEY_ID}/start`, { method: 'POST', body, cookie });
-    const rooms = [{ ports: '3031-3040', sessions: 1 }, { ports: '3041-3050', sessions: 10 }];
-    assert.equal((await start({ rooms: [{ ports: '3031; rm -rf /', sessions: 5 }] })).status, 400);
-    assert.equal((await start({ rooms: [rooms[0], { ports: '3041-3050', sessions: 2.5 }] })).status, 400);
-    assert.equal((await start({ rooms: [] })).status, 400);
-    assert.equal((await start({ rooms, model: { run: '../..', file: 'latest.pt' } })).status, 400);
-    assert.equal((await start({ rooms, model: { run: 'slither-v7', file: 'update-1.pt' } })).status, 400);
+    const groups = ['quiet', 'crowded'];
+    assert.equal((await start({ groups: ['quiet; rm -rf /'] })).status, 400);
+    assert.equal((await start({ groups: [] })).status, 400);
+    assert.equal((await start({ groups })).status, 409);
+
+    runningGroups.set('g-1', { name: 'quiet' }).set('g-2', { name: 'crowded' });
+    assert.equal((await start({ groups, model: { run: '../..', file: 'latest.pt' } })).status, 400);
+    assert.equal((await start({ groups, model: { run: 'slither-v7', file: 'update-1.pt' } })).status, 400);
 
     runningPid = 7;
     results.push({ rows: [{ name: 'v6', trainer: { pid: 7 } }], rowCount: 1 });
-    assert.equal((await start({ rooms })).status, 409);
+    assert.equal((await start({ groups })).status, 409);
 
-    results.push({ rows: [{ name: 'v6', trainer: { pid: 7, ports: '3030', sessions: 1 } }], rowCount: 1 });
     runningPid = null;
-    const started = await start({ rooms: [{ ...rooms[0], extra: 1 }, rooms[1]] });
-    assert.deepEqual(await started.json(), { trainer: { pid: 4242, rooms, running: true } });
-    assert.deepEqual(trainerCalls, [['start', { name: 'v6', rooms }]]);
-    assert.deepEqual(queries.at(-1).params, [KEY_ID, JSON.stringify({ pid: 4242, rooms })]);
+    liveRuns = [{ runId: KEY_ID }];
+    results.push({ rows: [{ name: 'v6', trainer: null }], rowCount: 1 });
+    assert.equal((await start({ groups })).status, 409);
+
+    liveRuns = [];
+    results.push({ rows: [{ name: 'v6', trainer: { pid: 7, groups: ['quiet'] } }], rowCount: 1 });
+    const started = await start({ groups: [...groups, 'quiet'] });
+    assert.deepEqual(await started.json(), { trainer: { pid: 4242, groups, running: true } });
+    assert.deepEqual(trainerCalls, [['start', { name: 'v6', groups }]]);
+    assert.deepEqual(queries.at(-1).params, [KEY_ID, JSON.stringify({ pid: 4242, groups })]);
 
     results.push({ rows: [{ name: 'new-v1', trainer: null }], rowCount: 1 });
-    await start({ rooms, model: { run: 'slither-v7', file: 'update-7300.pt', extra: 1 } });
-    assert.deepEqual(trainerCalls.at(-1), ['start', { name: 'new-v1', rooms, model: { run: 'slither-v7', file: 'update-7300.pt' } }]);
+    await start({ groups, model: { run: 'slither-v7', file: 'update-7300.pt', extra: 1 } });
+    assert.deepEqual(trainerCalls.at(-1), ['start', { name: 'new-v1', groups, model: { run: 'slither-v7', file: 'update-7300.pt' } }]);
   });
 
-  test('GET /rooms', async () => {
-    roomsRunning = [{ pid: 5, group: 4, count: 20, timescale: 1.5 }];
-    const response = await request('/rooms', { cookie: await login() });
-    assert.deepEqual(await response.json(), { firstPort: 3031, running: roomsRunning });
+  test('POST /agent/worlds', async () => {
+    const post = (body, key = 'psl_x') => request('/agent/worlds', { method: 'POST', body, key });
+    assert.equal((await post({ run: 'ppo-1', groups: [] })).status, 400);
+    assert.equal((await post({ run: 'ppo-1', groups: ['quiet,crowded'] })).status, 400);
+    assert.equal((await post({ run: 'ppo-1', groups: ['quiet'] }, null)).status, 401);
+
+    results.push({ rows: [{ id: KEY_ID }], rowCount: 1 }, { rows: [{ id: 'run-1' }], rowCount: 1 });
+    assert.equal((await post({ run: 'ppo-1', groups: ['quiet'] })).status, 409);
+
+    runningGroups.set(GROUP_ID, { name: 'quiet' });
+    queries = [];
+    results.push({ rows: [{ id: KEY_ID }], rowCount: 1 }, { rows: [{ id: 'run-1' }], rowCount: 1 });
+    const response = await post({ run: 'ppo-1', groups: ['quiet'] });
+    assert.deepEqual(await response.json(), { quiet: [{ url: 'http://127.0.0.1:51000', token: 'run-1.signed', sessions: 2 }] });
+    assert.equal(queries[0].params[0], hashKey('psl_x'));
+    assert.deepEqual(queries[1].params.slice(1), [KEY_ID, 'ppo-1']);
   });
 
-  test('POST /rooms/start', async () => {
+  test('GET /groups', async () => {
+    runningGroups.set(GROUP_ID, { name: 'quiet' });
+    worldStates[GROUP_ID] = [{ pid: 9, port: 51000, tps: 60, stepMs: 1.2, agents: 2 }];
+    results.push({ rows: [
+      { id: GROUP_ID, name: 'quiet', config: DEFAULTS, sessions: [2] },
+      { id: 'g-2', name: 'crowded', config: DEFAULTS, sessions: [10, 10] },
+    ] });
+    const body = await (await request('/groups', { cookie: await login() })).json();
+
+    assert.deepEqual(body.defaults, DEFAULTS);
+    assert.deepEqual(body.limits.BOTS, [0, 100, true]);
+    assert.deepEqual(body.groups.map((group) => [group.name, group.running, group.worlds]), [
+      ['quiet', true, worldStates[GROUP_ID]],
+      ['crowded', false, []],
+    ]);
+  });
+
+  test('POST /groups', async () => {
     const cookie = await login();
-    const start = (body) => request('/rooms/start', { method: 'POST', body, cookie });
-    assert.equal((await start({ count: 0, timescale: 1 })).status, 400);
-    assert.equal((await start({ count: 20, timescale: 10 })).status, 400);
-    assert.equal((await start({ count: 20, timescale: '2' })).status, 400);
+    const post = (body) => request('/groups', { method: 'POST', body, cookie });
+    assert.equal((await post({ name: 'a,b', sessions: [1] })).status, 400);
+    assert.equal((await post({ name: 'quiet', sessions: [] })).status, 400);
+    assert.equal((await post({ name: 'quiet', sessions: [33] })).status, 400);
+    assert.equal((await post({ name: 'quiet', sessions: [1], config: { MAP_WIDTH: 100 } })).status, 400);
+    assert.equal((await post({ name: 'quiet', sessions: [1], config: { FOG_RADIUS_MIN: 3000 } })).status, 400);
 
-    roomsRunning = [{ pid: 5, group: 4, count: 20, timescale: 1 }];
-    assert.equal((await start({ count: 20, timescale: 1.5 })).status, 409);
-    roomsRunning = [];
-    takenPort = 3035;
-    assert.equal((await start({ count: 20, timescale: 1.5 })).status, 409);
-    takenPort = null;
+    results.push({ rows: [], rowCount: 0 });
+    assert.equal((await post({ name: 'quiet', sessions: [1] })).status, 409);
 
-    const started = await start({ count: 20, timescale: 1.5 });
-    assert.equal(started.status, 201);
-    assert.deepEqual(await started.json(), { pid: 777, count: 20, timescale: 1.5 });
-    assert.deepEqual(roomsCalls, [['start', { count: 20, timescale: 1.5 }]]);
+    results.push({ rows: [{ id: GROUP_ID }], rowCount: 1 });
+    const created = await post({ name: 'quiet', sessions: [2, 2], config: { TIMESCALE: 1.5 } });
+    assert.equal(created.status, 201);
+    assert.deepEqual(await created.json(), { id: GROUP_ID });
+    assert.deepEqual(queries.at(-1).params.slice(1), ['quiet', JSON.stringify({ ...DEFAULTS, TIMESCALE: 1.5 }), [2, 2]]);
   });
 
-  test('POST /rooms/stop', async () => {
+  test('PATCH /groups/:id', async () => {
     const cookie = await login();
-    const stop = () => request('/rooms/stop', { method: 'POST', cookie });
+    const patch = (body) => request(`/groups/${GROUP_ID}`, { method: 'PATCH', body, cookie });
+    const found = () => results.push({ rows: [{ id: GROUP_ID, name: 'quiet', config: DEFAULTS, sessions: [2] }], rowCount: 1 });
+    assert.equal((await patch({ config: { BOTS: 1 } })).status, 404);
+    found();
+    assert.equal((await patch({})).status, 400);
+    found();
+    assert.equal((await patch({ config: { BOTS: 2.5 } })).status, 400);
+    found();
+    assert.equal((await patch({ config: { FOG_RADIUS_MAX: 200 } })).status, 400);
+    found();
+    assert.equal((await patch({ sessions: [0] })).status, 400);
+
+    runningGroups.set(GROUP_ID, { name: 'quiet' });
+    found();
+    assert.equal((await patch({ sessions: [3] })).status, 409);
+
+    found();
+    results.push({ rows: [{ id: GROUP_ID, name: 'quiet', config: { ...DEFAULTS, BOTS: 4 }, sessions: [2] }], rowCount: 1 });
+    const response = await patch({ config: { BOTS: 4 } });
+    assert.equal((await response.json()).config.BOTS, 4);
+    assert.deepEqual(queries.at(-1).params, [GROUP_ID, '{"BOTS":4}', null]);
+    assert.deepEqual(worldCalls, [['setConfig', GROUP_ID, { BOTS: 4 }]]);
+
+    runningGroups.clear();
+    found();
+    results.push({ rows: [{ id: GROUP_ID, name: 'quiet', config: DEFAULTS, sessions: [3, 1] }], rowCount: 1 });
+    await patch({ sessions: [3, 1] });
+    assert.deepEqual(queries.at(-1).params, [GROUP_ID, '{}', [3, 1]]);
+    assert.equal(worldCalls.length, 1);
+  });
+
+  test('POST /groups/:id/start', async () => {
+    const cookie = await login();
+    const start = () => request(`/groups/${GROUP_ID}/start`, { method: 'POST', cookie });
+    const group = { id: GROUP_ID, name: 'quiet', config: DEFAULTS, sessions: [2] };
+    assert.equal((await start()).status, 404);
+
+    runningGroups.set(GROUP_ID, group);
+    results.push({ rows: [group], rowCount: 1 });
+    assert.equal((await start()).status, 409);
+
+    runningGroups.clear();
+    results.push({ rows: [group], rowCount: 1 });
+    assert.equal((await start()).status, 204);
+    assert.equal(queries.at(-1).sql, 'UPDATE lab_groups SET running = true WHERE id = $1');
+    assert.deepEqual(worldCalls, [['start', group]]);
+  });
+
+  test('POST /groups/:id/stop', async () => {
+    const cookie = await login();
+    const stop = () => request(`/groups/${GROUP_ID}/stop`, { method: 'POST', cookie });
+    const group = { id: GROUP_ID, name: 'quiet', config: DEFAULTS, sessions: [2] };
+    results.push({ rows: [group], rowCount: 1 });
     assert.equal((await stop()).status, 409);
 
-    roomsRunning = [{ pid: 5, group: 4, count: 20, timescale: 1.5 }];
-    liveRuns = [{ runId: 'run-1' }];
+    runningGroups.set(GROUP_ID, group);
+    worldStates[GROUP_ID] = [{ agents: 0 }, { agents: 2 }];
+    results.push({ rows: [group], rowCount: 1 });
     assert.equal((await stop()).status, 409);
-    liveRuns = [];
+
+    worldStates[GROUP_ID] = [{ agents: 0 }, { agents: 0 }];
+    results.push({ rows: [group], rowCount: 1 });
     assert.equal((await stop()).status, 204);
-    assert.deepEqual(roomsCalls, [['stop', 4]]);
+    assert.equal(queries.at(-1).sql, 'UPDATE lab_groups SET running = false WHERE id = $1');
+    assert.deepEqual(worldCalls, [['stop', GROUP_ID]]);
+  });
+
+  test('DELETE /groups/:id', async () => {
+    const cookie = await login();
+    const remove = () => request(`/groups/${GROUP_ID}`, { method: 'DELETE', cookie });
+    runningGroups.set(GROUP_ID, { name: 'quiet' });
+    assert.equal((await remove()).status, 409);
+
+    runningGroups.clear();
+    assert.equal((await remove()).status, 404);
+    results.push({ rowCount: 1 });
+    assert.equal((await remove()).status, 204);
+    assert.deepEqual(queries.at(-1).params, [GROUP_ID]);
   });
 
   test('GET /models', async () => {

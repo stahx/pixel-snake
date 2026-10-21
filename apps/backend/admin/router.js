@@ -1,23 +1,14 @@
 import express from 'express';
 
+import { configError, rangeError } from '../class/Config.js';
 import { passwordLogin } from '../helpers/login.js';
 
 const MAX_POINTS = 5000;
-const LIMITS = {
-  TIMESCALE: [0.25, 4],
-  BOTS: [0, 100, true],
-  POINTS_AMOUNT: [0, 5000, true],
-  FOG_RADIUS_MIN: [100, 4000],
-  FOG_RADIUS_MAX: [100, 4000],
-  NORMAL_SPEED: [0.1, 10],
-  BOOST_SPEED: [0.1, 10],
-};
 
 const fail = (status, message) => Object.assign(new Error(message), { status });
-const checkRange = (name, value, min, max, integer = false) => {
-  if (!(typeof value === 'number' && value >= min && value <= max && (!integer || Number.isInteger(value)))) {
-    throw fail(400, `${name} must be ${integer ? 'a whole number' : 'a number'} ${min}-${max}`);
-  }
+const checkRange = (...range) => {
+  const error = rangeError(...range);
+  if (error) throw fail(400, error);
 };
 
 export function adminRouter({ game, password }) {
@@ -41,13 +32,8 @@ export function adminRouter({ game, password }) {
 
   router.patch('/config', (req, res) => {
     const values = req.body;
-    if (!Object.keys(values).length) throw fail(400, 'Nothing to change');
-    for (const [name, value] of Object.entries(values)) {
-      if (!Object.hasOwn(LIMITS, name)) throw fail(400, `Unknown parameter ${name}`);
-      checkRange(name, value, ...LIMITS[name]);
-    }
-    const { FOG_RADIUS_MIN, FOG_RADIUS_MAX } = { ...game.config, ...values };
-    if (FOG_RADIUS_MIN > FOG_RADIUS_MAX) throw fail(400, 'FOG_RADIUS_MIN must not exceed FOG_RADIUS_MAX');
+    const invalid = configError(values, game.config);
+    if (invalid) throw fail(400, invalid);
     game.setConfig(values);
     res.json(game.config);
   });
