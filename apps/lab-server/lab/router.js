@@ -1,11 +1,12 @@
 import express from 'express';
 import { randomUUID } from 'node:crypto';
-import { GAME_CONFIG, LIMITS, configError } from '@pixel-snake/backend/Config';
+import { LIMITS, configError } from '@pixel-snake/backend/Config';
 import { passwordLogin } from '@pixel-snake/backend/login';
 
 import { RUN_NAME, numbersError } from './agents.js';
 import { createKey, findKey, hashKey } from './keys.js';
 import { mergeWindows } from './progress.js';
+import { LAB_CONFIG } from './world.js';
 
 const LOG_LINES = 2000;
 const LOG_BATCH = 1000;
@@ -14,7 +15,7 @@ const GROUP_NAME = /^[\w.-]{1,40}$/;
 const MAX_GROUPS = 20;
 const MAX_PROCESSES = 40;
 const MAX_SESSIONS = 32;
-const DEFAULTS = Object.fromEntries(Object.keys(LIMITS).map((name) => [name, GAME_CONFIG[name]]));
+const DEFAULTS = Object.fromEntries(Object.keys(LIMITS).map((name) => [name, LAB_CONFIG[name]]));
 
 const fail = (status, message) => Object.assign(new Error(message), { status });
 const parametersError = (values) => (values && typeof values === 'object' && !Array.isArray(values) && !Object.keys(values).length

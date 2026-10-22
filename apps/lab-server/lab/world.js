@@ -10,6 +10,8 @@ import { RUN_NAME, numbersError } from './agents.js';
 import { HUMAN, verifyToken } from './keys.js';
 
 const STATE_MS = 1000;
+// Lab worlds keep the 4000 map balance the current runs trained on; a per-group map size replaces this.
+export const LAB_CONFIG = { ...GAME_CONFIG, MAP_WIDTH: 4000, MAP_HEIGHT: 4000, POINTS_AMOUNT: 400, FOG_RADIUS_MAX: 2500, BOTS: 10 };
 
 export function admitHumans(io, secret) {
   io.use((socket, next) => {
@@ -71,7 +73,7 @@ export function attachAgents({ io, game, secret, send }) {
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   process.on('disconnect', () => process.exit());
   process.once('message', ({ type, config, secret }) => {
-    const invalid = type === 'start' && typeof secret === 'string' && secret ? configError(config, GAME_CONFIG) : 'Expected a start message';
+    const invalid = type === 'start' && typeof secret === 'string' && secret ? configError(config, LAB_CONFIG) : 'Expected a start message';
     if (invalid) {
       console.error(`World: ${invalid}`);
       process.exit(1);
@@ -80,7 +82,7 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
     const server = http.createServer(app);
     const io = new Server(server, { serveClient: false });
     admitHumans(io, secret);
-    const game = new GameServer(io, { ...GAME_CONFIG, ...config });
+    const game = new GameServer(io, { ...LAB_CONFIG, ...config });
     serveClient(app, game);
     const agents = attachAgents({ io, game, secret, send: (message) => process.send(message) });
 
