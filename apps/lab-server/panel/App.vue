@@ -1,13 +1,16 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
-import { use } from 'echarts/core';
-import { BarChart, LineChart } from 'echarts/charts';
+import { connect, use } from 'echarts/core';
+import { LineChart } from 'echarts/charts';
 import { CanvasRenderer } from 'echarts/renderers';
-import { AriaComponent, GridComponent, LegendComponent, MarkAreaComponent, MarkLineComponent, TooltipComponent } from 'echarts/components';
+import {
+  AriaComponent, DataZoomComponent, GridComponent, LegendComponent, MarkAreaComponent, MarkLineComponent, TooltipComponent,
+} from 'echarts/components';
 import VChart from 'vue-echarts';
 import { mergeWindows } from '../lab/progress.js';
 
-use([LineChart, BarChart, CanvasRenderer, GridComponent, TooltipComponent, LegendComponent, AriaComponent, MarkAreaComponent, MarkLineComponent]);
+use([LineChart, CanvasRenderer, GridComponent, TooltipComponent, LegendComponent, AriaComponent, MarkAreaComponent, MarkLineComponent, DataZoomComponent]);
+connect('run');
 
 const SERIES = ['#3987e5', '#d95926', '#199e70', '#c98500'];
 const INK = {
@@ -31,6 +34,7 @@ const DEATHS = [
 const FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif';
 const PAGE_SIZE = 10;
 const LOG_LINES = 2000;
+const VIEW_MS = 10 * 3600_000;
 const AGENT_COLUMNS = [
   { key: 'id', label: 'Agent' },
   { key: 'world', label: 'Świat' },
@@ -66,6 +70,8 @@ const compareData = ref({});
 const compareAxis = ref('time');
 const runAxis = ref('time');
 const runWindow = ref(30);
+const runFollow = ref(true);
+let runRange = null;
 const agentSort = ref({ key: 'score', desc: true });
 const page = ref(0);
 const draft = ref({});
@@ -329,6 +335,10 @@ const pageCount = computed(() => Math.max(1, Math.ceil(sortedAgents.value.length
 const pageAgents = computed(() => sortedAgents.value.slice(page.value * PAGE_SIZE, (page.value + 1) * PAGE_SIZE));
 watch(pageCount, (count) => { page.value = Math.min(page.value, count - 1); });
 watch(runId, () => { page.value = 0; preview.value = null; });
+watch([runId, runAxis], () => {
+  runFollow.value = true;
+  runRange = null;
+});
 
 function sortAgents(key) {
   const { key: current, desc } = agentSort.value;
@@ -369,7 +379,7 @@ const chart = (series, yFormat = (v) => number(v)) => ({
     backgroundColor: INK.raised,
     borderColor: INK.border,
     textStyle: { color: INK.primary },
-    axisPointer: { type: series[0]?.type === 'bar' ? 'shadow' : 'line', lineStyle: { color: INK.muted } },
+    axisPointer: { type: 'line', lineStyle: { color: INK.muted } },
     valueFormatter: yFormat,
   },
   xAxis: {
@@ -422,6 +432,51 @@ const episodeTotals = computed(() => {
   return progress.value.map((r) => [new Date(r.recorded_at).getTime(), total += r.episodes]);
 });
 const episodesAt = (at) => episodeTotals.value.findLast(([time]) => time <= at)?.[1] ?? 0;
+const trainedSince = (last, ms) => {
+  let need = ms;
+  let cursor = last;
+  for (const { from, to } of breaks.value.filter((b) => b.to > b.from).sort((a, b) => b.to - a.to)) {
+    if (need <= cursor - to) break;
+    need -= cursor - to;
+    cursor = from;
+  }
+  return cursor - need;
+};
+const xRange = computed(() => {
+  const first = new Date(progress.value[0].recorded_at).getTime();
+  const last = new Date(progress.value.at(-1).recorded_at).getTime();
+  if (runAxis.value === 'time') return { min: first, max: last, span: VIEW_MS };
+  return { min: episodesAt(first), max: episodesAt(last), span: episodesAt(last) - episodesAt(trainedSince(last, VIEW_MS)) };
+});
+const runZoom = () => {
+  const { min, max, span } = xRange.value;
+  const width = runRange ? runRange.end - runRange.start : span;
+  const [startValue, endValue] = runFollow.value ? [Math.max(min, max - width), max] : [runRange.start, runRange.end];
+  const shared = { xAxisIndex: 0, filterMode: 'none', startValue, endValue };
+  return [
+    { type: 'inside', ...shared, zoomOnMouseWheel: 'ctrl', moveOnMouseWheel: 'shift' },
+    {
+      type: 'slider',
+      ...shared,
+      height: 18,
+      bottom: 4,
+      showDetail: false,
+      brushSelect: false,
+      borderColor: INK.border,
+      fillerColor: 'rgba(57, 135, 229, 0.15)',
+      handleStyle: { color: INK.raised, borderColor: INK.muted },
+      moveHandleStyle: { color: INK.axis },
+      dataBackground: { lineStyle: { color: INK.axis }, areaStyle: { color: INK.grid } },
+      selectedDataBackground: { lineStyle: { color: SERIES[0] }, areaStyle: { color: 'rgba(57, 135, 229, 0.12)' } },
+    },
+  ];
+};
+function onRunZoom(event) {
+  const { start, end } = event.batch?.[0] ?? event;
+  const { min, max } = xRange.value;
+  runRange = { start: min + (start / 100) * (max - min), end: min + (end / 100) * (max - min) };
+  runFollow.value = end >= 99.9;
+}
 const valueAxis = (option, xLabel, yFormat) => {
   option.xAxis = { ...option.xAxis, type: 'value', axisLabel: { ...option.xAxis.axisLabel, formatter: xLabel } };
   option.tooltip = {
@@ -437,13 +492,17 @@ const valueAxis = (option, xLabel, yFormat) => {
 const timeChart = (series, yFormat = (v) => number(v)) => {
   const byEpisodes = runAxis.value === 'episodes';
   const x = (at) => (byEpisodes ? episodesAt(new Date(at).getTime()) : new Date(at).getTime());
-  const option = chart(series.map((s) => ({
-    ...s,
-    data: [
+  const option = chart(series.map((s) => {
+    const data = [
       ...breaks.value.map(({ from, to }) => [byEpisodes ? episodesAt(from) + 0.5 : (from + to) / 2, null]),
       ...s.data.map(([at, value]) => [x(at), value]),
-    ].sort(([a], [b]) => a - b),
-  })), yFormat);
+    ].sort(([a], [b]) => a - b);
+    const lone = (i) => data[i - 1]?.[1] == null && data[i + 1]?.[1] == null;
+    return { ...s, data, showSymbol: true, symbolSize: (value, { dataIndex }) => (lone(dataIndex) ? 8 : 0) };
+  }), yFormat);
+  option.xAxis = { ...option.xAxis, min: xRange.value.min, max: xRange.value.max };
+  option.grid = { ...option.grid, bottom: 52 };
+  option.dataZoom = runZoom();
   const edge = { color: INK.muted, type: 'dashed', width: 1 };
   if (byEpisodes) {
     option.series[0].markLine = {
@@ -482,22 +541,13 @@ const survivalChart = computed(() => timeChart(
 ));
 const deathChart = computed(() => {
   const counted = windows.value.filter((r) => Object.keys(r.deaths).length);
-  const option = chart(DEATHS
-    .map(([cause, label, color]) => ({
-      name: label,
-      type: 'bar',
-      stack: 'deaths',
-      barMaxWidth: 24,
-      data: counted.map((r) => r.deaths[cause] || 0),
-      itemStyle: { color, borderColor: INK.surface, borderWidth: 1 },
-    }))
-    .filter((series) => series.data.some((count) => count > 0)));
-  option.xAxis = {
-    ...option.xAxis,
-    type: 'category',
-    data: counted.map((r) => new Date(r.recorded_at).toLocaleTimeString('pl-PL', { timeStyle: 'short' })),
-  };
-  return option;
+  const causes = DEATHS.filter(([cause]) => counted.some((r) => r.deaths[cause]));
+  return timeChart((causes.length ? causes : DEATHS.slice(0, 1)).map(([cause, label, color]) => ({
+    ...line(label, color, counted.map((r) => [r.recorded_at, r.deaths[cause] || 0])),
+    stack: 'deaths',
+    areaStyle: { color, opacity: 0.85 },
+    lineStyle: { width: 1, color: INK.surface },
+  })));
 });
 const metricCharts = computed(() => metricNames.value.map((name) => ({
   name,
@@ -586,7 +636,9 @@ onMounted(async () => {
         groupData.value = await api('/groups');
         return;
       }
+      const episodes = run.value?.episodes;
       [live.value, runs.value, groupData.value] = await Promise.all([api('/live'), api('/runs'), api('/groups')]);
+      if (run.value && run.value.episodes !== episodes) progress.value = await api(`/runs/${runId.value}/progress`);
       if (logsOpen.value && runId.value) await loadLogs();
     } catch (e) {
       error.value = e.message;
@@ -893,28 +945,32 @@ onUnmounted(() => {
                 {{ minutes === 60 ? '1 h' : `${minutes} min` }}
               </button>
             </div>
+            <div class="zoom-controls">
+              <button v-if="!runFollow" class="small" @click="runFollow = true">Najnowsze →</button>
+              <span class="muted">Przeciągnij wykres w bok, żeby się cofnąć. Ctrl + kółko albo szczypanie zmienia zakres.</span>
+            </div>
           </div>
 
           <div v-if="progress.length" class="charts">
             <article class="card">
               <h2>Średni wynik</h2>
-              <v-chart class="chart" :option="scoreChart" autoresize />
+              <v-chart class="chart" :option="scoreChart" group="run" autoresize @datazoom="onRunZoom" />
             </article>
             <article class="card">
               <h2>Najlepszy wynik w oknie</h2>
-              <v-chart class="chart" :option="bestChart" autoresize />
+              <v-chart class="chart" :option="bestChart" group="run" autoresize @datazoom="onRunZoom" />
             </article>
             <article class="card">
               <h2>Czas życia</h2>
-              <v-chart class="chart" :option="survivalChart" autoresize />
+              <v-chart class="chart" :option="survivalChart" group="run" autoresize @datazoom="onRunZoom" />
             </article>
             <article class="card">
               <h2>Przyczyny końca epizodu</h2>
-              <v-chart class="chart" :option="deathChart" autoresize />
+              <v-chart class="chart" :option="deathChart" group="run" autoresize @datazoom="onRunZoom" />
             </article>
             <article v-for="metric in metricCharts" :key="metric.name" class="card">
               <h2>{{ metric.name }} <small class="muted">trener</small></h2>
-              <v-chart class="chart" :option="metric.option" autoresize />
+              <v-chart class="chart" :option="metric.option" group="run" autoresize @datazoom="onRunZoom" />
             </article>
           </div>
 
