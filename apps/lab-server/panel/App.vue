@@ -222,7 +222,8 @@ const saveGroup = (card) => groupAction(async () => {
   const config = Object.fromEntries(changedParameters(card).map((name) => [name, card.draft.config[name]]));
   const body = {
     ...(Object.keys(config).length && { config }),
-    ...(processesChanged(card) && { sessions: card.draft.sessions, opponents: card.draft.opponents }),
+    ...(JSON.stringify(card.draft.sessions) !== JSON.stringify(card.group.sessions) && { sessions: card.draft.sessions }),
+    ...(processesChanged(card) && { opponents: card.draft.opponents }),
   };
   await api(`/groups/${card.group.id}`, { method: 'PATCH', body });
 });
@@ -1073,12 +1074,12 @@ onUnmounted(() => {
             </label>
           </div>
 
-          <fieldset class="processes" :disabled="card.group?.running">
+          <fieldset class="processes">
             <legend>Procesy · sesje trenera i przeciwnicy w każdym</legend>
             <div v-for="(count, index) in card.draft.sessions" :key="index" class="process">
               <span class="process-number">#{{ index + 1 }}</span>
               <label>Sesje
-                <input v-model.number="card.draft.sessions[index]" type="number" min="1" max="32" step="1" required>
+                <input v-model.number="card.draft.sessions[index]" type="number" min="1" max="32" step="1" required :disabled="card.group?.running">
               </label>
               <div v-for="(opponent, row) in card.draft.opponents[index]" :key="row" class="opponent">
                 <label>Przeciwnik
@@ -1096,8 +1097,8 @@ onUnmounted(() => {
               </div>
               <button v-if="card.draft.opponents[index].length < 4" type="button" class="ghost small" @click="card.draft.opponents[index].push({ model: null, count: 1 })">+ przeciwnik</button>
             </div>
-            <button type="button" class="ghost" @click="addProcess(card.draft)">+ proces</button>
-            <button v-if="card.draft.sessions.length > 1" type="button" class="ghost" @click="removeProcess(card.draft)">− proces</button>
+            <button type="button" class="ghost" :disabled="card.group?.running" @click="addProcess(card.draft)">+ proces</button>
+            <button v-if="card.draft.sessions.length > 1" type="button" class="ghost" :disabled="card.group?.running" @click="removeProcess(card.draft)">− proces</button>
           </fieldset>
 
           <div class="params-actions">
@@ -1112,7 +1113,7 @@ onUnmounted(() => {
           </div>
           <p class="muted">
             {{ card.group?.running
-              ? 'Zapisane ustawienia trafiają do działających światów od razu. Procesy zmienisz po zatrzymaniu grupy, a trenerzy zobaczą je po swoim restarcie.'
+              ? 'Zapisane ustawienia i przeciwnicy trafiają do działających światów od razu: boty natychmiast, modele po kilku sekundach. Sesje trenera i liczbę procesów zmienisz po zatrzymaniu grupy, a trenerzy zobaczą je po swoim restarcie.'
               : 'Ustawienia i procesy zaczną działać po starcie grupy.' }}
           </p>
         </form>

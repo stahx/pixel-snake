@@ -73,6 +73,13 @@ export function createWorlds({ file = WORLD, restartMs = RESTART_MS } = {}) {
       Object.assign(running.config, values);
       sendTo(running.worlds, { type: 'config', values });
     },
+    setOpponents(id, opponents) {
+      const running = groups.get(id);
+      running.opponents = opponents;
+      running.worlds.forEach((world, index) => world.child.connected && world.child.send({
+        type: 'config', values: { BOTS: opponents.length ? botsOf(opponents[index]) : running.config.BOTS },
+      }));
+    },
     send: (message) => sendTo(worlds.all(), message),
     all: () => [...groups.values()].flatMap((running) => running.worlds),
     view,

@@ -132,6 +132,17 @@ process.on('disconnect', () => process.exit());
     assert.equal(GROUP.config.FOG_RADIUS_MAX, 2500);
   });
 
+  test('setOpponents', async () => {
+    worlds.start({ ...GROUP, opponents: [[{ model: null, count: 1 }], [{ model: null, count: 1 }]] });
+    await listening(2);
+    const { agent } = await joinAgent(worlds.resolve('quiet', RUN_ID)[1]);
+    worlds.setOpponents('group-1', [[{ model: null, count: 1 }], [{ model: null, count: 6 }, { model: 'v7/latest.pt', count: 2 }]]);
+    const [info] = await once(agent, 'env-info');
+
+    assert.equal(info.players.bots, 6);
+    assert.equal(worlds.group('quiet').opponents[1][0].count, 6);
+  });
+
   test('send', async () => {
     worlds.start(GROUP);
     await listening(2);

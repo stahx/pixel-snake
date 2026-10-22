@@ -225,7 +225,7 @@ export function labRouter({ pool, lab, worlds, password, flushMinutes, trainer, 
     res.status(201).json({ id: created.rows[0].id });
   }));
 
-  // Parameters reach running worlds at once; processes only change while the group is stopped,
+  // Parameters and opponents reach running worlds at once; trainer sessions only change while the group is stopped,
   // because trainers read the group's layout when they start.
   router.patch('/groups/:id', route(async (req, res) => {
     const { config, sessions, opponents: lineup } = req.body ?? {};
@@ -236,7 +236,7 @@ export function labRouter({ pool, lab, worlds, password, flushMinutes, trainer, 
       || (sessions !== undefined && sessionsError(sessions))
       || (processes && opponentsError(lineup ?? group.opponents, (sessions ?? group.sessions).length, trainer.models()));
     if (invalid) throw fail(400, invalid);
-    if (processes && worlds.running(group.id)) throw fail(409, 'Stop the group to change its processes');
+    if (sessions !== undefined && worlds.running(group.id)) throw fail(409, 'Stop the group to change its processes');
     const result = await pool.query(
       `UPDATE lab_groups SET config = config || $2::jsonb, sessions = COALESCE($3::integer[], sessions),
          opponents = COALESCE($4::jsonb, opponents) WHERE id = $1
@@ -244,6 +244,11 @@ export function labRouter({ pool, lab, worlds, password, flushMinutes, trainer, 
       [group.id, JSON.stringify(config ?? {}), sessions ?? null, lineup === undefined ? null : JSON.stringify(lineup)],
     );
     if (config !== undefined && worlds.running(group.id)) worlds.setConfig(group.id, config);
+    if (lineup !== undefined && worlds.running(group.id)) {
+      worlds.setOpponents(group.id, lineup);
+      opponents.stop(group.id);
+      opponents.start({ ...group, opponents: lineup });
+    }
     res.json(result.rows[0]);
   }));
 

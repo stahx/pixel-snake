@@ -46,6 +46,7 @@ const worlds = {
   start: (group) => worldCalls.push(['start', group]),
   stop: (id) => worldCalls.push(['stop', id]),
   setConfig: (id, values) => worldCalls.push(['setConfig', id, values]),
+  setOpponents: (id, opponents) => worldCalls.push(['setOpponents', id, opponents]),
 };
 const opponents = {
   start: (group) => opponentCalls.push(['start', group.id]),
@@ -359,7 +360,12 @@ describe('lab/router', () => {
     assert.deepEqual(worldCalls, [['setConfig', GROUP_ID, { BOTS: 4 }]]);
 
     found();
-    assert.equal((await patch({ opponents: [[{ model: null, count: 3 }]] })).status, 409);
+    results.push({ rows: [{ id: GROUP_ID }], rowCount: 1 });
+    const live = [[{ model: null, count: 3 }, { model: 'slither-v7/latest.pt', count: 2 }]];
+    assert.equal((await patch({ opponents: live })).status, 200);
+    assert.deepEqual(worldCalls.at(-1), ['setOpponents', GROUP_ID, live]);
+    assert.deepEqual(opponentCalls, [['stop', GROUP_ID], ['start', GROUP_ID]]);
+    worldCalls.pop();
 
     runningGroups.clear();
     found();
