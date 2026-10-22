@@ -1,5 +1,6 @@
 const SERVER_TICK_MS = 1000 / 60;
 const LAB_TOKEN = new URLSearchParams(location.hash.slice(1)).get('token');
+const FOLLOW = new URLSearchParams(location.search).get('follow');
 
 class GameClient {
   constructor() {
@@ -19,7 +20,7 @@ class GameClient {
     this.canvas = document.querySelector('#canvas');
     this.ctx = this.canvas.getContext('2d');
 
-    this.socket = io('', { auth: { token: LAB_TOKEN } });
+    this.socket = io('', { auth: { token: LAB_TOKEN, follow: FOLLOW } });
 
     this.leaderboard = [];
     this.entityMap = new Map();
@@ -28,7 +29,7 @@ class GameClient {
     this.lastUpdateTime = performance.now();
 
     this.player = null;
-    this.followId = new URLSearchParams(location.search).get('follow');
+    this.followId = FOLLOW;
     if (this.followId) this.menu.style.display = 'none';
     this.followed = null;
     this._uiDirty = false;
@@ -1071,7 +1072,6 @@ class GameClient {
     const visionRadius = watched ? this.#getVisionRadius(watched.size || 10) : 0;
 
     for (const entity of this.entityMap.values()) {
-      if (watched && this.#torusDistSq(watched.x, watched.y, entity.x, entity.y) > visionRadius * visionRadius) continue;
       if (entity.type === 'point') {
         const pos = this.#getRenderPos(entity, alpha);
         this.#forEachTorusCopy(pos.x, pos.y, pos.size, camX, camY, camR, camB, (x, y) => {
@@ -1183,14 +1183,6 @@ class GameClient {
 
     this.ctx.restore();
     this.#drawMinimap();
-  }
-
-  #torusDistSq(px, py, ex, ey) {
-    const dx = Math.abs(ex - px) % this.worldWidth;
-    const dy = Math.abs(ey - py) % this.worldHeight;
-    const wrappedX = Math.min(dx, this.worldWidth - dx);
-    const wrappedY = Math.min(dy, this.worldHeight - dy);
-    return wrappedX * wrappedX + wrappedY * wrappedY;
   }
 
   // Keep in sync with GameServer.js#getFogRadius -- vision grows with snake size
@@ -1383,7 +1375,7 @@ class GameClient {
     this.#resetState();
     clearInterval(this.pingIntervalId);
     this.socket.disconnect();
-    this.socket = io('', { auth: { token: LAB_TOKEN } });
+    this.socket = io('', { auth: { token: LAB_TOKEN, follow: FOLLOW } });
     this.spectatorX = Math.random() * this.worldWidth;
     this.spectatorY = Math.random() * this.worldHeight;
     this.spectatorDX =

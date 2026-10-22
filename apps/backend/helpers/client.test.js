@@ -5,7 +5,7 @@ import express from 'express';
 
 import { serveClient } from './client.js';
 
-const game = { running: true, entities: [], config: { MAP_WIDTH: 4000, MAP_HEIGHT: 3000 } };
+const game = { running: true, config: { MAP_WIDTH: 4000, MAP_HEIGHT: 3000 } };
 
 let server;
 let base;
@@ -27,7 +27,7 @@ describe('helpers/client', () => {
     assert.equal((await fetch(`${base}/icon.svg`)).status, 200);
     assert.match((await (await fetch(`${base}/version`)).json()).version, /^\d+\.\d+/);
     assert.equal((await fetch(`${base}/state`)).status, 200);
-    assert.deepEqual(await (await fetch(`${base}/game-data`)).json(), { entities: [], width: 4000, height: 3000 });
+    assert.deepEqual(await (await fetch(`${base}/game-data`)).json(), { width: 4000, height: 3000 });
 
     game.running = false;
     assert.equal((await fetch(`${base}/state`)).status, 400);

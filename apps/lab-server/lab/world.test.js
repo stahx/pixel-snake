@@ -71,6 +71,10 @@ describe('lab/world', () => {
     assert.equal((await admit({})).message, 'Open this world from the lab panel');
     assert.equal((await admit({ token: worldToken(SECRET, RUN_ID) })).message, 'Open this world from the lab panel');
     assert.equal((await admit({ token: worldToken('other-secret', HUMAN) })).message, 'Open this world from the lab panel');
+
+    const viewer = fakeSocket('human-2', { token: worldToken(SECRET, HUMAN), follow: 'agent-1' });
+    await new Promise((resolve) => gate(viewer, resolve));
+    assert.equal(viewer.data.follow, 'agent-1');
   });
 
   test('attachAgents', async () => {

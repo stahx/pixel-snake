@@ -15,6 +15,6 @@ export function serveClient(app, game) {
 
   app.get('/game-data', (req, res) => {
     if (!game.running) return res.status(400).send(false);
-    res.json({ entities: game.entities, width: game.config.MAP_WIDTH, height: game.config.MAP_HEIGHT });
+    res.json({ width: game.config.MAP_WIDTH, height: game.config.MAP_HEIGHT });
   });
 }

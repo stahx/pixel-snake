@@ -74,21 +74,7 @@ class GameServer extends EventEmitter {
       this.agents.set(socket.id, agent);
       this.#joinPlayer(socket, agent.name);
     } else {
-      const initialSnapshot = [];
-      for (const e of this.allEntities.values()) {
-        initialSnapshot.push(this.#serializeEntity(e));
-      }
-      socket.emit('update', { a: initialSnapshot });
-      const spectatorMap = new Map();
-      for (const e of this.allEntities.values()) {
-        spectatorMap.set(e.id, {
-          x: Math.round(e.x),
-          y: Math.round(e.y),
-          s: Math.round(e.size),
-          pt: e.points,
-        });
-      }
-      this.spectators.set(socket.id, spectatorMap);
+      this.spectators.set(socket.id, new Map());
     }
     socket.emit('env-info', this.#envInfo());
 
@@ -129,10 +115,6 @@ class GameServer extends EventEmitter {
     socket.on('ping-check', () => {
       socket.emit('pong-check');
     });
-  }
-
-  get entities() {
-    return Array.from(this.allEntities.values());
   }
 
   start() {
@@ -753,7 +735,6 @@ class GameServer extends EventEmitter {
   }
 
   #emitUpdate() {
-    const players = this.#getPlayerEntities();
     this.updateCounter++;
 
     let leaderboard = null;
@@ -766,189 +747,104 @@ class GameServer extends EventEmitter {
       }
     }
 
-    for (const player of players) {
+    for (const player of this.#getPlayerEntities()) {
       if (this.botManager.isBot(player.playerId)) continue;
       const prevVisible = this.playerState.get(player.playerId);
-      if (!prevVisible) continue;
-
-      const playerX = player.x;
-      const playerY = player.y;
-      const R = this.#getFogRadius(player);
-      const FOG_RADIUS_SQ = R * R;
-
-      const added = [];
-      const updated = [];
-      const removed = [];
-
-      const currentVisible = new Map();
-
-      for (const entity of this.allEntities.values()) {
-        if (
-          this.torusDistSq(playerX, playerY, entity.x, entity.y) > FOG_RADIUS_SQ
-        )
-          continue;
-
-        currentVisible.set(entity.id, entity);
-
-        if (!prevVisible.has(entity.id)) {
-          added.push(this.#serializeEntity(entity));
-        } else if (entity.type !== 'point') {
-          const prev = prevVisible.get(entity.id);
-          const rx = Math.round(entity.x);
-          const ry = Math.round(entity.y);
-          if (entity.type === 'tail') {
-            const rs = this.#roundedSize(entity);
-            if (prev.x !== rx || prev.y !== ry || prev.s !== rs) {
-              updated.push({ i: entity.id, x: rx, y: ry, s: rs });
-            }
-          } else {
-            const rs = Math.round(entity.size);
-            const ra = entity.type === 'player' ? Math.round(entity.currentAngle * 1000) / 1000 : undefined;
-            const rb = entity.type === 'player' ? (entity.speed ? 1 : 0) : undefined;
-            if (
-              prev.x !== rx ||
-              prev.y !== ry ||
-              prev.s !== rs ||
-              (entity.type === 'player' && (prev.pt !== entity.points || prev.a !== ra || prev.b !== rb))
-            ) {
-              const upd = { i: entity.id, x: rx, y: ry };
-              if (prev.s !== rs) upd.s = rs;
-              if (entity.type === 'player') {
-                if (prev.pt !== entity.points) upd.pt = entity.points;
-                upd.a = ra;
-                upd.b = rb;
-              }
-              updated.push(upd);
-            }
-          }
-        }
-      }
-
-      for (const [id] of prevVisible) {
-        if (!currentVisible.has(id)) {
-          removed.push(id);
-        }
-      }
-
-      const newPrevMap = new Map();
-      for (const [id, entity] of currentVisible) {
-        if (entity.type === 'tail') {
-          newPrevMap.set(id, {
-            x: Math.round(entity.x),
-            y: Math.round(entity.y),
-            s: this.#roundedSize(entity),
-            pt: entity.points,
-          });
-        } else {
-          const entry = {
-            x: Math.round(entity.x),
-            y: Math.round(entity.y),
-            s: Math.round(entity.size),
-            pt: entity.points,
-          };
-          if (entity.type === 'player') {
-            entry.a = Math.round(entity.currentAngle * 1000) / 1000;
-            entry.b = entity.speed ? 1 : 0;
-          }
-          newPrevMap.set(id, entry);
-        }
-      }
-      this.playerState.set(player.playerId, newPrevMap);
-
-      const updateData = {};
-      if (added.length) updateData.a = added;
-      if (updated.length) updateData.u = updated;
-      if (removed.length) updateData.r = removed;
-      if (leaderboard) updateData.l = leaderboard;
-
-      if (added.length || updated.length || removed.length || leaderboard) {
-        this.sockets.get(player.playerId).emit('update', updateData);
-      }
+      if (prevVisible) this.playerState.set(player.playerId, this.#sendVisible(player.playerId, prevVisible, player, leaderboard));
     }
 
     for (const [socketId, prevVisible] of this.spectators) {
-      const added = [];
-      const updated = [];
-      const removed = [];
-      const currentVisible = new Map();
+      const followed = this.players.get(this.sockets.get(socketId).data.follow);
+      this.spectators.set(socketId, this.#sendVisible(socketId, prevVisible, followed));
+    }
+  }
 
-      for (const entity of this.allEntities.values()) {
-        currentVisible.set(entity.id, entity);
+  #sendVisible(socketId, prevVisible, viewer, leaderboard = null) {
+    const radiusSq = viewer && this.#getFogRadius(viewer) ** 2;
+    const added = [];
+    const updated = [];
+    const removed = [];
+    const currentVisible = new Map();
 
-        if (!prevVisible.has(entity.id)) {
-          added.push(this.#serializeEntity(entity));
-        } else if (entity.type !== 'point') {
-          const prev = prevVisible.get(entity.id);
-          const rx = Math.round(entity.x);
-          const ry = Math.round(entity.y);
-          if (entity.type === 'tail') {
-            const rs = this.#roundedSize(entity);
-            if (prev.x !== rx || prev.y !== ry || prev.s !== rs) {
-              updated.push({ i: entity.id, x: rx, y: ry, s: rs });
-            }
-          } else {
-            const rs = Math.round(entity.size);
-            const ra = entity.type === 'player' ? Math.round(entity.currentAngle * 1000) / 1000 : undefined;
-            const rb = entity.type === 'player' ? (entity.speed ? 1 : 0) : undefined;
-            if (
-              prev.x !== rx ||
-              prev.y !== ry ||
-              prev.s !== rs ||
-              (entity.type === 'player' && (prev.pt !== entity.points || prev.a !== ra || prev.b !== rb))
-            ) {
-              const upd = { i: entity.id, x: rx, y: ry };
-              if (prev.s !== rs) upd.s = rs;
-              if (entity.type === 'player') {
-                if (prev.pt !== entity.points) upd.pt = entity.points;
-                upd.a = ra;
-                upd.b = rb;
-              }
-              updated.push(upd);
-            }
-          }
-        }
-      }
+    for (const entity of viewer ? this.allEntities.values() : []) {
+      if (this.torusDistSq(viewer.x, viewer.y, entity.x, entity.y) > radiusSq) continue;
 
-      for (const [id] of prevVisible) {
-        if (!currentVisible.has(id)) {
-          removed.push(id);
-        }
-      }
+      currentVisible.set(entity.id, entity);
 
-      const newPrevMap = new Map();
-      for (const [id, entity] of currentVisible) {
+      if (!prevVisible.has(entity.id)) {
+        added.push(this.#serializeEntity(entity));
+      } else if (entity.type !== 'point') {
+        const prev = prevVisible.get(entity.id);
+        const rx = Math.round(entity.x);
+        const ry = Math.round(entity.y);
         if (entity.type === 'tail') {
-          newPrevMap.set(id, {
-            x: Math.round(entity.x),
-            y: Math.round(entity.y),
-            s: this.#roundedSize(entity),
-            pt: entity.points,
-          });
-        } else {
-          const entry = {
-            x: Math.round(entity.x),
-            y: Math.round(entity.y),
-            s: Math.round(entity.size),
-            pt: entity.points,
-          };
-          if (entity.type === 'player') {
-            entry.a = Math.round(entity.currentAngle * 1000) / 1000;
-            entry.b = entity.speed ? 1 : 0;
+          const rs = this.#roundedSize(entity);
+          if (prev.x !== rx || prev.y !== ry || prev.s !== rs) {
+            updated.push({ i: entity.id, x: rx, y: ry, s: rs });
           }
-          newPrevMap.set(id, entry);
+        } else {
+          const rs = Math.round(entity.size);
+          const ra = entity.type === 'player' ? Math.round(entity.currentAngle * 1000) / 1000 : undefined;
+          const rb = entity.type === 'player' ? (entity.speed ? 1 : 0) : undefined;
+          if (
+            prev.x !== rx ||
+            prev.y !== ry ||
+            prev.s !== rs ||
+            (entity.type === 'player' && (prev.pt !== entity.points || prev.a !== ra || prev.b !== rb))
+          ) {
+            const upd = { i: entity.id, x: rx, y: ry };
+            if (prev.s !== rs) upd.s = rs;
+            if (entity.type === 'player') {
+              if (prev.pt !== entity.points) upd.pt = entity.points;
+              upd.a = ra;
+              upd.b = rb;
+            }
+            updated.push(upd);
+          }
         }
-      }
-      this.spectators.set(socketId, newPrevMap);
-
-      const updateData = {};
-      if (added.length) updateData.a = added;
-      if (updated.length) updateData.u = updated;
-      if (removed.length) updateData.r = removed;
-
-      if (added.length || updated.length || removed.length) {
-        this.sockets.get(socketId).emit('update', updateData);
       }
     }
+
+    for (const [id] of prevVisible) {
+      if (!currentVisible.has(id)) {
+        removed.push(id);
+      }
+    }
+
+    const newPrevMap = new Map();
+    for (const [id, entity] of currentVisible) {
+      if (entity.type === 'tail') {
+        newPrevMap.set(id, {
+          x: Math.round(entity.x),
+          y: Math.round(entity.y),
+          s: this.#roundedSize(entity),
+          pt: entity.points,
+        });
+      } else {
+        const entry = {
+          x: Math.round(entity.x),
+          y: Math.round(entity.y),
+          s: Math.round(entity.size),
+          pt: entity.points,
+        };
+        if (entity.type === 'player') {
+          entry.a = Math.round(entity.currentAngle * 1000) / 1000;
+          entry.b = entity.speed ? 1 : 0;
+        }
+        newPrevMap.set(id, entry);
+      }
+    }
+
+    const updateData = {};
+    if (added.length) updateData.a = added;
+    if (updated.length) updateData.u = updated;
+    if (removed.length) updateData.r = removed;
+    if (leaderboard) updateData.l = leaderboard;
+
+    if (added.length || updated.length || removed.length || leaderboard) {
+      this.sockets.get(socketId).emit('update', updateData);
+    }
+    return newPrevMap;
   }
 }
 

@@ -12,9 +12,11 @@ import { HUMAN, verifyToken } from './keys.js';
 const STATE_MS = 1000;
 
 export function admitHumans(io, secret) {
-  io.use((socket, next) => (verifyToken(secret, socket.handshake.auth.token) === HUMAN
-    ? next()
-    : next(new Error('Open this world from the lab panel'))));
+  io.use((socket, next) => {
+    if (verifyToken(secret, socket.handshake.auth.token) !== HUMAN) return next(new Error('Open this world from the lab panel'));
+    socket.data.follow = socket.handshake.auth.follow;
+    next();
+  });
 }
 
 export function attachAgents({ io, game, secret, send }) {

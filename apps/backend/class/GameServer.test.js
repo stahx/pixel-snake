@@ -19,10 +19,11 @@ let game;
 let sent;
 let episodes;
 
-const fakeSocket = (id) => {
+const fakeSocket = (id, data = {}) => {
   const handlers = {};
   return {
     id,
+    data,
     handlers,
     on: (event, handler) => { handlers[event] = handler; },
     emit: (event, data) => sent.push({ to: id, event, data }),
@@ -64,7 +65,7 @@ describe('class/GameServer', () => {
 
     assert.equal(game.players.has('browser-1'), false);
     assert.equal(game.spectators.has('browser-1'), true);
-    assert.deepEqual(sent.map((m) => m.event), ['update', 'env-info']);
+    assert.deepEqual(sent.map((m) => m.event), ['env-info']);
   });
 
   test('start', (t) => {
@@ -148,6 +149,35 @@ describe('class/GameServer', () => {
     const added = sent.filter((m) => m.to === 'agent-1' && m.event === 'update').flatMap((m) => m.data.a ?? []);
     assert.equal(added.some((e) => e.t === 2 && e.p === 'agent-2'), false);
     assert.equal(added.find((e) => e.i === tail.id).s, Math.round(owner.size));
+  });
+
+  test('step (spectators)', () => {
+    game.connect(fakeSocket('agent-1'), AGENT);
+    game.connect(fakeSocket('agent-2'), AGENT);
+    game.connect(fakeSocket('menu-1'));
+    game.connect(fakeSocket('viewer-1', { follow: 'agent-1' }));
+    clearPoints();
+    const agent = game.players.get('agent-1');
+    const other = game.players.get('agent-2');
+    other.x = agent.x + 2000;
+    other.y = agent.y;
+    other.speed = true;
+    const near = new Point(agent.x + 100, agent.y, { size: 8, respawns: false });
+    const far = new Point(agent.x + 1000, agent.y, { size: 8, respawns: false });
+    for (const point of [near, far]) {
+      game.points.set(point.id, point);
+      game.allEntities.set(point.id, point);
+    }
+    sent = [];
+    game.step();
+
+    const received = (id) => sent.filter((m) => m.to === id && m.event === 'update').flatMap((m) => m.data.a ?? []);
+    assert.deepEqual(received('menu-1'), []);
+    const seen = received('viewer-1');
+    assert.ok(seen.some((e) => e.t === 2 && e.p === 'agent-1'));
+    assert.ok(seen.some((e) => e.i === near.id));
+    assert.equal(seen.some((e) => e.i === far.id || (e.t === 2 && e.p === 'agent-2')), false);
+    assert.deepEqual([...game.spectators.get('viewer-1').keys()].sort(), [...game.playerState.get('agent-1').keys()].sort());
   });
 
   test('step (eating)', () => {
