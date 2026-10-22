@@ -95,15 +95,19 @@ after server changes.
 
 ### Groups
 
-A group is a set of worlds with the same settings (game speed, bots, food,
-vision radius, speeds) and a list of processes, each with the number of trainer
-sessions it takes. Saved settings reach a running group's worlds at once;
-processes change while the group is stopped. A trainer started with
+A group is a set of worlds with the same settings (game speed, food, vision
+radius, speeds) and a list of processes. Each process is one world: the number
+of trainer sessions it takes and its opponents, either the game's bots or a
+saved model that plays without learning (`py/play.py`, which the lab starts
+with the group, restarts if it dies and stops with the group or the lab; its
+episodes go to the run `<model's run>-play`). Saved settings reach a running
+group's worlds at once; processes and opponents change while the group is
+stopped. A trainer started with
 `--groups quiet,crowded` asks the lab for every world of those groups, opens
 the sessions each world asks for, and asks again on every reconnect, because a
 world that dies is restarted by the lab on a new port with a new token. Groups
-that were running start again when the lab starts. Stopping a group needs its
-trainers stopped first.
+that were running start again when the lab starts, opponents included.
+Stopping a group needs its trainers stopped first; its opponents stop with it.
 
 The game and its bots count time in ticks, so a higher game speed is the same
 game played faster: agents collect experience sooner and play the same at

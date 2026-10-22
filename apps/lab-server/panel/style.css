@@ -175,6 +175,10 @@ legend { padding: 0; margin-bottom: 8px; color: var(--ink-2); }
 .processes legend { flex-basis: 100%; }
 .processes label { width: 90px; }
 .processes:disabled { opacity: 0.6; }
+.process { flex-basis: 100%; display: flex; align-items: end; gap: 8px; flex-wrap: wrap; padding-top: 8px; border-top: 1px solid var(--line); }
+.process-number { align-self: center; min-width: 32px; color: var(--ink-2); }
+.opponent { display: flex; align-items: end; gap: 8px; }
+.processes .opponent label:first-child { width: 220px; }
 .new-group { justify-self: start; border-style: dashed; color: var(--ink-2); }
 .key-form { display: flex; gap: 12px; align-items: end; }
 .key-form label { flex: 1; }

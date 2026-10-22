@@ -5,6 +5,7 @@ import { passwordLogin } from '@pixel-snake/backend/login';
 
 import { RUN_NAME, numbersError } from './agents.js';
 import { createKey, findKey, hashKey } from './keys.js';
+import { botsOf, opponentRun } from './opponents.js';
 import { mergeWindows } from './progress.js';
 import { LAB_CONFIG } from './world.js';
 
@@ -15,6 +16,7 @@ const GROUP_NAME = /^[\w.-]{1,40}$/;
 const MAX_GROUPS = 20;
 const MAX_PROCESSES = 40;
 const MAX_SESSIONS = 32;
+const MAX_OPPONENTS = 4;
 const DEFAULTS = Object.fromEntries(Object.keys(LIMITS).map((name) => [name, LAB_CONFIG[name]]));
 
 const fail = (status, message) => Object.assign(new Error(message), { status });
@@ -29,9 +31,18 @@ const sessionsError = (sessions) => (Array.isArray(sessions) && sessions.length 
   && sessions.every((count) => Number.isInteger(count) && count >= 1 && count <= MAX_SESSIONS)
   ? null
   : `Sessions must list 1-${MAX_PROCESSES} processes of 1-${MAX_SESSIONS} sessions each`);
+const opponentsError = (lineup, processes, models) => {
+  const saved = new Set(models.flatMap(({ run, files }) => files.map((file) => `${run}/${file}`)));
+  const row = (entry) => entry && Number.isInteger(entry.count) && entry.count >= 1
+    && (entry.model === null ? entry.count <= LIMITS.BOTS[1] : saved.has(entry.model) && entry.count <= MAX_SESSIONS);
+  return Array.isArray(lineup) && (!lineup.length || lineup.length === processes)
+    && lineup.every((rows) => Array.isArray(rows) && rows.length <= MAX_OPPONENTS && rows.every(row) && botsOf(rows) <= LIMITS.BOTS[1])
+    ? null
+    : `Opponents must list every process with up to ${MAX_OPPONENTS} rows: 1-${LIMITS.BOTS[1]} bots or 1-${MAX_SESSIONS} sessions of a saved model`;
+};
 const route = (handler) => (req, res, next) => handler(req, res).catch(next);
 
-export function labRouter({ pool, lab, worlds, password, flushMinutes, trainer }) {
+export function labRouter({ pool, lab, worlds, password, flushMinutes, trainer, opponents }) {
   const router = express.Router();
 
   async function agentRun(req) {
@@ -186,13 +197,13 @@ export function labRouter({ pool, lab, worlds, password, flushMinutes, trainer }
   router.get('/models', (req, res) => res.json(trainer.models()));
 
   async function findGroup(id) {
-    const found = await pool.query('SELECT id, name, config, sessions FROM lab_groups WHERE id = $1', [id]);
+    const found = await pool.query('SELECT id, name, config, sessions, opponents FROM lab_groups WHERE id = $1', [id]);
     if (!found.rowCount) throw fail(404, 'Group not found');
     return found.rows[0];
   }
 
   router.get('/groups', route(async (req, res) => {
-    const result = await pool.query('SELECT id, name, config, sessions, created_at FROM lab_groups ORDER BY created_at');
+    const result = await pool.query('SELECT id, name, config, sessions, opponents, created_at FROM lab_groups ORDER BY created_at');
     res.json({
       limits: LIMITS,
       defaults: DEFAULTS,
@@ -201,14 +212,14 @@ export function labRouter({ pool, lab, worlds, password, flushMinutes, trainer }
   }));
 
   router.post('/groups', route(async (req, res) => {
-    const { name, config, sessions } = req.body ?? {};
+    const { name, config, sessions, opponents: lineup = [] } = req.body ?? {};
     if (typeof name !== 'string' || !GROUP_NAME.test(name)) throw fail(400, `Group name must match ${GROUP_NAME}`);
     const values = { ...DEFAULTS, ...config };
-    const invalid = configError(values, {}) || sessionsError(sessions);
+    const invalid = configError(values, {}) || sessionsError(sessions) || opponentsError(lineup, sessions.length, trainer.models());
     if (invalid) throw fail(400, invalid);
     const created = await pool.query(
-      'INSERT INTO lab_groups(id, name, config, sessions) VALUES ($1, $2, $3, $4) ON CONFLICT (name) DO NOTHING RETURNING id',
-      [randomUUID(), name, JSON.stringify(values), sessions],
+      'INSERT INTO lab_groups(id, name, config, sessions, opponents) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (name) DO NOTHING RETURNING id',
+      [randomUUID(), name, JSON.stringify(values), sessions, JSON.stringify(lineup)],
     );
     if (!created.rowCount) throw fail(409, 'A group with that name already exists');
     res.status(201).json({ id: created.rows[0].id });
@@ -217,17 +228,20 @@ export function labRouter({ pool, lab, worlds, password, flushMinutes, trainer }
   // Parameters reach running worlds at once; processes only change while the group is stopped,
   // because trainers read the group's layout when they start.
   router.patch('/groups/:id', route(async (req, res) => {
-    const { config, sessions } = req.body ?? {};
+    const { config, sessions, opponents: lineup } = req.body ?? {};
     const group = await findGroup(req.params.id);
-    const invalid = (config === undefined && sessions === undefined && 'Nothing to change')
+    const processes = sessions !== undefined || lineup !== undefined;
+    const invalid = (config === undefined && !processes && 'Nothing to change')
       || (config !== undefined && configError(config, group.config))
-      || (sessions !== undefined && sessionsError(sessions));
+      || (sessions !== undefined && sessionsError(sessions))
+      || (processes && opponentsError(lineup ?? group.opponents, (sessions ?? group.sessions).length, trainer.models()));
     if (invalid) throw fail(400, invalid);
-    if (sessions !== undefined && worlds.running(group.id)) throw fail(409, 'Stop the group to change its processes');
+    if (processes && worlds.running(group.id)) throw fail(409, 'Stop the group to change its processes');
     const result = await pool.query(
-      `UPDATE lab_groups SET config = config || $2::jsonb, sessions = COALESCE($3::integer[], sessions) WHERE id = $1
-       RETURNING id, name, config, sessions`,
-      [group.id, JSON.stringify(config ?? {}), sessions ?? null],
+      `UPDATE lab_groups SET config = config || $2::jsonb, sessions = COALESCE($3::integer[], sessions),
+         opponents = COALESCE($4::jsonb, opponents) WHERE id = $1
+       RETURNING id, name, config, sessions, opponents`,
+      [group.id, JSON.stringify(config ?? {}), sessions ?? null, lineup === undefined ? null : JSON.stringify(lineup)],
     );
     if (config !== undefined && worlds.running(group.id)) worlds.setConfig(group.id, config);
     res.json(result.rows[0]);
@@ -238,14 +252,21 @@ export function labRouter({ pool, lab, worlds, password, flushMinutes, trainer }
     if (worlds.running(group.id)) throw fail(409, 'The group is already running');
     await pool.query('UPDATE lab_groups SET running = true WHERE id = $1', [group.id]);
     worlds.start(group);
+    opponents.start(group);
     res.status(204).end();
   }));
 
   router.post('/groups/:id/stop', route(async (req, res) => {
     const group = await findGroup(req.params.id);
     if (!worlds.running(group.id)) throw fail(409, 'The group is not running');
-    if (worlds.state(group.id).some((world) => world.agents)) throw fail(409, 'Stop the trainers first: their sessions would lose the worlds');
+    const names = [...new Set(group.opponents.flat().filter((row) => row.model).map((row) => opponentRun(row.model)))];
+    const own = names.length ? (await pool.query('SELECT id FROM lab_runs WHERE name = ANY($1)', [names])).rows : [];
+    const opponentIds = new Set(own.map((run) => run.id));
+    if (worlds.state(group.id).some((world) => world.runs.some((runId) => !opponentIds.has(runId)))) {
+      throw fail(409, 'Stop the trainers first: their sessions would lose the worlds');
+    }
     await pool.query('UPDATE lab_groups SET running = false WHERE id = $1', [group.id]);
+    opponents.stop(group.id);
     worlds.stop(group.id);
     res.status(204).end();
   }));

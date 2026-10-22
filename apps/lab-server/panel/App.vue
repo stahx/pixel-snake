@@ -44,7 +44,6 @@ const AGENT_COLUMNS = [
 ];
 const PARAMETERS = [
   ['TIMESCALE', 'Tempo gry'],
-  ['BOTS', 'Boty'],
   ['POINTS_AMOUNT', 'Jedzenie'],
   ['FOG_RADIUS_MIN', 'Widok min'],
   ['FOG_RADIUS_MAX', 'Widok max'],
@@ -129,7 +128,7 @@ async function open(target) {
   view.value = target;
   if (target === 'runs') await loadRuns();
   else if (target === 'compare') await loadCompare();
-  else if (target === 'groups') groupData.value = await api('/groups');
+  else if (target === 'groups') [groupData.value, models.value] = await Promise.all([api('/groups'), api('/models')]);
   else keys.value = await api('/keys');
 }
 
@@ -182,11 +181,18 @@ const revokeKey = (key) => action(async () => {
   await api(`/keys/${key.id}`, { method: 'DELETE' });
   keys.value = await api('/keys');
 });
-const savedGroup = (group) => JSON.stringify([group.config, group.sessions]);
+const savedGroup = (group) => JSON.stringify([group.config, group.sessions, group.opponents]);
+const lineupOf = (group) => (group.opponents.length ? group.opponents : group.sessions.map(() => [{ model: null, count: group.config.BOTS }]));
+const draftOf = (group) => ({
+  saved: savedGroup(group),
+  config: { ...group.config },
+  sessions: [...group.sessions],
+  opponents: lineupOf(group).map((rows) => rows.map((row) => ({ ...row }))),
+});
 watch(() => groupData.value.groups, (groups) => {
   for (const group of groups) {
     if (groupDrafts.value[group.id]?.saved === savedGroup(group)) continue;
-    groupDrafts.value[group.id] = { saved: savedGroup(group), config: { ...group.config }, sessions: [...group.sessions] };
+    groupDrafts.value[group.id] = draftOf(group);
   }
 });
 const groupCards = computed(() => [
@@ -194,8 +200,9 @@ const groupCards = computed(() => [
   ...(newGroup.value ? [{ group: null, draft: newGroup.value }] : []),
 ].filter((card) => card.draft));
 const changedParameters = (card) => PARAMETERS.map(([name]) => name).filter((name) => card.draft.config[name] !== card.group.config[name]);
-const sessionsChanged = (card) => JSON.stringify(card.draft.sessions) !== JSON.stringify(card.group.sessions);
-const groupChanged = (card) => changedParameters(card).length > 0 || sessionsChanged(card);
+const processesChanged = (card) => JSON.stringify([card.draft.sessions, card.draft.opponents])
+  !== JSON.stringify([card.group.sessions, lineupOf(card.group)]);
+const groupChanged = (card) => changedParameters(card).length > 0 || processesChanged(card);
 const groupAction = (work) => action(async () => {
   await work();
   groupData.value = await api('/groups');
@@ -204,7 +211,8 @@ const startNewGroup = () => {
   const names = groupData.value.groups.map((group) => group.name);
   let next = groupData.value.groups.length + 1;
   while (names.includes(String(next))) next++;
-  newGroup.value = { name: String(next), config: { ...groupData.value.defaults }, sessions: [1] };
+  const { defaults } = groupData.value;
+  newGroup.value = { name: String(next), config: { ...defaults }, sessions: [1], opponents: [[{ model: null, count: defaults.BOTS }]] };
 };
 const createGroup = () => groupAction(async () => {
   await api('/groups', { method: 'POST', body: newGroup.value });
@@ -214,13 +222,24 @@ const saveGroup = (card) => groupAction(async () => {
   const config = Object.fromEntries(changedParameters(card).map((name) => [name, card.draft.config[name]]));
   const body = {
     ...(Object.keys(config).length && { config }),
-    ...(sessionsChanged(card) && { sessions: card.draft.sessions }),
+    ...(processesChanged(card) && { sessions: card.draft.sessions, opponents: card.draft.opponents }),
   };
   await api(`/groups/${card.group.id}`, { method: 'PATCH', body });
 });
 const resetGroup = (card) => {
-  groupDrafts.value[card.group.id] = { saved: savedGroup(card.group), config: { ...card.group.config }, sessions: [...card.group.sessions] };
+  groupDrafts.value[card.group.id] = draftOf(card.group);
 };
+const addProcess = (draft) => {
+  draft.sessions.push(draft.sessions.at(-1));
+  draft.opponents.push(draft.opponents.at(-1).map((row) => ({ ...row })));
+};
+const removeProcess = (draft) => {
+  draft.sessions.pop();
+  draft.opponents.pop();
+};
+const modelLabel = (model) => model.replace('/', ' · ').replace(/\.pt$/, '');
+const lineupLabel = (rows) => rows.map((row) => (row.model ? `${modelLabel(row.model)} × ${row.count}` : `boty × ${row.count}`)).join(' · ') || 'brak';
+const playersIn = (group, index) => group.sessions[index] + lineupOf(group)[index].reduce((sum, row) => sum + (row.model ? row.count : 0), 0);
 const startGroup = (group) => groupAction(() => api(`/groups/${group.id}/start`, { method: 'POST' }));
 const stopGroup = (group) => groupAction(async () => {
   if (!window.confirm(`Zatrzymać grupę „${group.name}”?`)) return;
@@ -1009,6 +1028,7 @@ onUnmounted(() => {
           Trener z <code>--groups</code> dostaje adres i token każdego świata oraz liczbę sesji, które ma w nim grać, a po restarcie świata pyta o nowy adres.
           Tempo gry przyspiesza grę: mechanika i boty liczą czas w tickach, więc agenci grają w tę samą grę, tylko szybciej.
           „Otwórz” pokazuje świat w nowej karcie: możesz patrzeć albo dołączyć jako gracz.
+          Przeciwnicy w procesie to zwykłe boty albo zapisany model, który gra bez uczenia; jego epizody trafiają do runu <code>&lt;model&gt;-play</code>.
         </p>
 
         <form v-for="card in groupCards" :key="card.group?.id ?? 'new'" class="card group" @submit.prevent="card.group ? saveGroup(card) : createGroup()">
@@ -1029,14 +1049,15 @@ onUnmounted(() => {
 
           <div v-if="card.group?.running" class="table-scroll">
             <table>
-              <thead><tr><th>Świat</th><th>Port</th><th>Ticki/s</th><th>Krok</th><th>Sesje</th><th><span class="sr-only">Podgląd</span></th></tr></thead>
+              <thead><tr><th>Świat</th><th>Port</th><th>Ticki/s</th><th>Krok</th><th>Agenci</th><th>Przeciwnicy</th><th><span class="sr-only">Podgląd</span></th></tr></thead>
               <tbody>
                 <tr v-for="(world, index) in card.group.worlds" :key="index">
                   <td>#{{ index + 1 }} <span class="muted">PID {{ world.pid }}</span></td>
                   <td>{{ world.port ?? 'restart…' }}</td>
                   <td>{{ number(world.tps) }}</td>
                   <td>{{ world.stepMs == null ? '—' : `${number(world.stepMs)} ms` }}</td>
-                  <td>{{ world.agents }} / {{ card.group.sessions[index] }}</td>
+                  <td>{{ world.agents }} / {{ playersIn(card.group, index) }}</td>
+                  <td>{{ lineupLabel(lineupOf(card.group)[index]) }}</td>
                   <td><a v-if="world.view" :href="world.view" target="_blank" rel="noopener">Otwórz</a></td>
                 </tr>
               </tbody>
@@ -1053,12 +1074,30 @@ onUnmounted(() => {
           </div>
 
           <fieldset class="processes" :disabled="card.group?.running">
-            <legend>Procesy · sesje trenera w każdym</legend>
-            <label v-for="(count, index) in card.draft.sessions" :key="index">#{{ index + 1 }}
-              <input v-model.number="card.draft.sessions[index]" type="number" min="1" max="32" step="1" required>
-            </label>
-            <button type="button" class="ghost" @click="card.draft.sessions.push(1)">+ proces</button>
-            <button v-if="card.draft.sessions.length > 1" type="button" class="ghost" @click="card.draft.sessions.pop()">− proces</button>
+            <legend>Procesy · sesje trenera i przeciwnicy w każdym</legend>
+            <div v-for="(count, index) in card.draft.sessions" :key="index" class="process">
+              <span class="process-number">#{{ index + 1 }}</span>
+              <label>Sesje
+                <input v-model.number="card.draft.sessions[index]" type="number" min="1" max="32" step="1" required>
+              </label>
+              <div v-for="(opponent, row) in card.draft.opponents[index]" :key="row" class="opponent">
+                <label>Przeciwnik
+                  <select v-model="opponent.model">
+                    <option :value="null">Boty</option>
+                    <optgroup v-for="m in models" :key="m.run" :label="m.run">
+                      <option v-for="file in m.files" :key="file" :value="`${m.run}/${file}`">{{ modelLabel(`${m.run}/${file}`) }}</option>
+                    </optgroup>
+                  </select>
+                </label>
+                <label>Ile
+                  <input v-model.number="opponent.count" type="number" min="1" :max="opponent.model ? 32 : 100" step="1" required>
+                </label>
+                <button type="button" class="ghost small" :aria-label="`Usuń przeciwnika ${row + 1} z procesu ${index + 1}`" @click="card.draft.opponents[index].splice(row, 1)">×</button>
+              </div>
+              <button v-if="card.draft.opponents[index].length < 4" type="button" class="ghost small" @click="card.draft.opponents[index].push({ model: null, count: 1 })">+ przeciwnik</button>
+            </div>
+            <button type="button" class="ghost" @click="addProcess(card.draft)">+ proces</button>
+            <button v-if="card.draft.sessions.length > 1" type="button" class="ghost" @click="removeProcess(card.draft)">− proces</button>
           </fieldset>
 
           <div class="params-actions">

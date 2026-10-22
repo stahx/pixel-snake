@@ -74,6 +74,18 @@ describe('lab/worlds', { timeout: 20_000 }, () => {
     await assert.rejects(connected(connect(first.url, {})), /Open this world from the lab panel/);
   });
 
+  test('start (opponents)', async () => {
+    worlds.start({ ...GROUP, opponents: [[{ model: null, count: 1 }], [{ model: null, count: 4 }, { model: 'v7/latest.pt', count: 2 }]] });
+    await listening(2);
+    const [first, second] = worlds.resolve('quiet', RUN_ID);
+
+    assert.equal((await joinAgent(first)).info.players.bots, 1);
+    const reported = message('state', (state) => state.agents.length === 1);
+    assert.equal((await joinAgent(second)).info.players.bots, 4);
+    await reported;
+    assert.deepEqual(worlds.state('group-1').map((world) => world.runs), [[RUN_ID], [RUN_ID]]);
+  });
+
   test('start (restart)', async () => {
     worlds.start(GROUP);
     await listening(2);

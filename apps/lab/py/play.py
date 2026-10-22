@@ -19,6 +19,8 @@ if __name__ == '__main__':
     parser.add_argument('--model', type=Path, required=True, help='checkpoint, e.g. py/checkpoints/ppo-1/latest.pt')
     parser.add_argument('--groups', required=True, help='lab groups to play in: every world gets the sessions its group sets')
     parser.add_argument('--run', help="run the episodes are logged under (default: <the model's run>-play)")
+    parser.add_argument('--world', type=int, help='play only in this world of each group, counted from 1')
+    parser.add_argument('--sessions', type=int, help='sessions per world (default: what the group sets)')
     args = parser.parse_args()
     run = args.run or f'{args.model.resolve().parent.name}-play'
     try:
@@ -31,7 +33,9 @@ if __name__ == '__main__':
     sessions = []
     for group, listed in worlds.items():
         for world, found in enumerate(listed):
-            for number in range(found['sessions']):
+            if args.world and world != args.world - 1:
+                continue
+            for number in range(args.sessions or found['sessions']):
                 label = f'{group} #{world + 1} session {number}'
                 session = partial(play_session, group, world, run, net)
                 sessions.append(threading.Thread(target=keep_playing, args=(session, label), daemon=True))

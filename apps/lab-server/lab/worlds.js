@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 import { numbersError } from './agents.js';
 import { HUMAN, worldToken } from './keys.js';
+import { botsOf } from './opponents.js';
 
 const WORLD = fileURLToPath(new URL('./world.js', import.meta.url));
 const RESTART_MS = 1000;
@@ -30,7 +31,8 @@ export function createWorlds({ file = WORLD, restartMs = RESTART_MS } = {}) {
     const world = { group, index, secret, viewToken: worldToken(secret, HUMAN), port: null, state: null };
     world.child = fork(file);
     group.worlds[index] = world;
-    world.child.send({ type: 'start', config: group.config, secret: world.secret });
+    const bots = group.opponents.length ? { BOTS: botsOf(group.opponents[index]) } : {};
+    world.child.send({ type: 'start', config: { ...group.config, ...bots }, secret: world.secret });
     world.child.on('error', (error) => console.error(`Lab: world ${label(world)}:`, error.message));
     world.child.on('message', (message) => {
       if (!MESSAGES[message?.type]?.(message)) return console.error(`Lab: world ${label(world)} sent an invalid message`);
@@ -56,9 +58,9 @@ export function createWorlds({ file = WORLD, restartMs = RESTART_MS } = {}) {
   };
 
   return Object.assign(worlds, {
-    start({ id, name, config, sessions }) {
+    start({ id, name, config, sessions, opponents = [] }) {
       if (groups.has(id)) return;
-      const started = { id, name, config: { ...config }, sessions, worlds: [] };
+      const started = { id, name, config: { ...config }, sessions, opponents, worlds: [] };
       groups.set(id, started);
       sessions.forEach((_, index) => spawn(started, index));
     },
@@ -86,6 +88,7 @@ export function createWorlds({ file = WORLD, restartMs = RESTART_MS } = {}) {
       tps: world.state?.tps ?? null,
       stepMs: world.state?.stepMs ?? null,
       agents: world.state?.agents.length ?? 0,
+      runs: world.state?.agents.map((agent) => agent.runId) ?? [],
     })),
   });
 }

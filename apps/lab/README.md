@@ -166,6 +166,7 @@ python py/ppo_agent.py --groups quiet --run ppo-1
 python py/ppo_agent.py --groups quiet,crowded --run ppo-1   # 10 worlds × 1 session and 10 × 10, say
 python py/ppo_agent.py --groups quiet --run ppo-2 --model py/checkpoints/ppo-1/update-800.pt
 python py/play.py --groups quiet --model py/checkpoints/ppo-1/latest.pt
+python py/play.py --groups mixed --world 2 --sessions 5 --model py/checkpoints/ppo-1/latest.pt   # how the lab runs an opponent
 node js/ppo-agent.js --groups quiet --run ppo-js-1
 ```
 

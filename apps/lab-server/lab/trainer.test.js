@@ -10,6 +10,7 @@ import { createTrainer } from './trainer.js';
 const labDir = mkdtempSync(join(tmpdir(), 'lab-trainer-'));
 mkdirSync(join(labDir, 'py'));
 writeFileSync(join(labDir, 'py/ppo_agent.py'), 'echo "started $* for $PIXEL_SNAKE_LAB_URL"\ntrap \'echo stopped; exit 0\' INT\nwhile :; do sleep 0.05; done\n');
+writeFileSync(join(labDir, 'py/play.py'), 'echo "played $* for $PIXEL_SNAKE_LAB_URL"\n');
 const trainer = createTrainer({ labUrl: 'http://127.0.0.1:3101', labDir, python: '/bin/sh' });
 
 describe('lab/trainer', () => {
@@ -33,6 +34,15 @@ describe('lab/trainer', () => {
     await sleep(300);
     assert.equal(readFileSync(join(labDir, 'py/checkpoints/v8/trainer.log'), 'utf8'),
       'started --groups quiet --run v8 --model py/checkpoints/v7/update-200.pt for http://127.0.0.1:3101\nstopped\n');
+  });
+
+  test('play', async () => {
+    mkdirSync(join(labDir, 'py/checkpoints/v7'), { recursive: true });
+    const child = trainer.play({ model: { run: 'v7', file: 'latest.pt' }, run: 'v7-play', group: 'quiet', world: 1, sessions: 3 });
+    await new Promise((resolve) => child.on('exit', resolve));
+
+    assert.equal(readFileSync(join(labDir, 'py/checkpoints/v7/play.log'), 'utf8'),
+      'played --model py/checkpoints/v7/latest.pt --groups quiet --world 2 --sessions 3 --run v7-play for http://127.0.0.1:3101\n');
   });
 
   test('models', () => {

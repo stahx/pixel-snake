@@ -22,6 +22,7 @@ let liveRuns;
 let worldCalls;
 let runningGroups;
 let worldStates;
+let opponentCalls;
 
 const pool = {
   query: async (sql, params) => {
@@ -46,6 +47,10 @@ const worlds = {
   stop: (id) => worldCalls.push(['stop', id]),
   setConfig: (id, values) => worldCalls.push(['setConfig', id, values]),
 };
+const opponents = {
+  start: (group) => opponentCalls.push(['start', group.id]),
+  stop: (id) => opponentCalls.push(['stop', id]),
+};
 
 const request = (path, { method = 'GET', body, cookie, key } = {}) => fetch(base + path, {
   method,
@@ -60,7 +65,7 @@ const login = async () => {
 describe('lab/router', () => {
   before(async () => {
     const app = express();
-    app.use('/api/lab', labRouter({ pool, lab, worlds, password: PASSWORD, flushMinutes: 5, trainer }));
+    app.use('/api/lab', labRouter({ pool, lab, worlds, password: PASSWORD, flushMinutes: 5, trainer, opponents }));
     server = app.listen(0, '127.0.0.1');
     await once(server, 'listening');
     base = `http://127.0.0.1:${server.address().port}/api/lab`;
@@ -76,6 +81,7 @@ describe('lab/router', () => {
     worldCalls = [];
     runningGroups = new Map();
     worldStates = {};
+    opponentCalls = [];
   });
 
   test('POST /login', async () => {
@@ -306,13 +312,31 @@ describe('lab/router', () => {
     const created = await post({ name: 'quiet', sessions: [2, 2], config: { TIMESCALE: 1.5 } });
     assert.equal(created.status, 201);
     assert.deepEqual(await created.json(), { id: GROUP_ID });
-    assert.deepEqual(queries.at(-1).params.slice(1), ['quiet', JSON.stringify({ ...DEFAULTS, TIMESCALE: 1.5 }), [2, 2]]);
+    assert.deepEqual(queries.at(-1).params.slice(1), ['quiet', JSON.stringify({ ...DEFAULTS, TIMESCALE: 1.5 }), [2, 2], '[]']);
+
+    const bots = (count) => ({ model: null, count });
+    const model = (count, file = 'latest.pt') => ({ model: `slither-v7/${file}`, count });
+    for (const opponents of [
+      [[bots(3)]],
+      [[bots(3)], [model(2, 'update-1.pt')]],
+      [[bots(3)], [model(33)]],
+      [[bots(0)], []],
+      [[bots(60), bots(41)], []],
+      [[bots(1), bots(1), bots(1), bots(1), bots(1)], []],
+      [[{ count: 2 }], []],
+    ]) {
+      assert.equal((await post({ name: 'mixed', sessions: [5, 5], opponents })).status, 400, JSON.stringify(opponents));
+    }
+    results.push({ rows: [{ id: GROUP_ID }], rowCount: 1 });
+    const lineup = [[bots(3), model(5)], []];
+    assert.equal((await post({ name: 'mixed', sessions: [5, 5], opponents: lineup })).status, 201);
+    assert.equal(queries.at(-1).params[4], JSON.stringify(lineup));
   });
 
   test('PATCH /groups/:id', async () => {
     const cookie = await login();
     const patch = (body) => request(`/groups/${GROUP_ID}`, { method: 'PATCH', body, cookie });
-    const found = () => results.push({ rows: [{ id: GROUP_ID, name: 'quiet', config: DEFAULTS, sessions: [2] }], rowCount: 1 });
+    const found = () => results.push({ rows: [{ id: GROUP_ID, name: 'quiet', config: DEFAULTS, sessions: [2], opponents: [] }], rowCount: 1 });
     assert.equal((await patch({ config: { BOTS: 1 } })).status, 404);
     found();
     assert.equal((await patch({})).status, 400);
@@ -331,15 +355,26 @@ describe('lab/router', () => {
     results.push({ rows: [{ id: GROUP_ID, name: 'quiet', config: { ...DEFAULTS, BOTS: 4 }, sessions: [2] }], rowCount: 1 });
     const response = await patch({ config: { BOTS: 4 } });
     assert.equal((await response.json()).config.BOTS, 4);
-    assert.deepEqual(queries.at(-1).params, [GROUP_ID, '{"BOTS":4}', null]);
+    assert.deepEqual(queries.at(-1).params, [GROUP_ID, '{"BOTS":4}', null, null]);
     assert.deepEqual(worldCalls, [['setConfig', GROUP_ID, { BOTS: 4 }]]);
+
+    found();
+    assert.equal((await patch({ opponents: [[{ model: null, count: 3 }]] })).status, 409);
 
     runningGroups.clear();
     found();
-    results.push({ rows: [{ id: GROUP_ID, name: 'quiet', config: DEFAULTS, sessions: [3, 1] }], rowCount: 1 });
+    results.push({ rows: [{ id: GROUP_ID, name: 'quiet', config: DEFAULTS, sessions: [3, 1], opponents: [] }], rowCount: 1 });
     await patch({ sessions: [3, 1] });
-    assert.deepEqual(queries.at(-1).params, [GROUP_ID, '{}', [3, 1]]);
+    assert.deepEqual(queries.at(-1).params, [GROUP_ID, '{}', [3, 1], null]);
     assert.equal(worldCalls.length, 1);
+
+    found();
+    assert.equal((await patch({ sessions: [3, 1], opponents: [[{ model: null, count: 3 }]] })).status, 400);
+    found();
+    results.push({ rows: [{ id: GROUP_ID }], rowCount: 1 });
+    const lineup = [[{ model: 'slither-v7/latest.pt', count: 4 }]];
+    await patch({ opponents: lineup });
+    assert.deepEqual(queries.at(-1).params, [GROUP_ID, '{}', null, JSON.stringify(lineup)]);
   });
 
   test('POST /groups/:id/start', async () => {
@@ -357,24 +392,27 @@ describe('lab/router', () => {
     assert.equal((await start()).status, 204);
     assert.equal(queries.at(-1).sql, 'UPDATE lab_groups SET running = true WHERE id = $1');
     assert.deepEqual(worldCalls, [['start', group]]);
+    assert.deepEqual(opponentCalls, [['start', GROUP_ID]]);
   });
 
   test('POST /groups/:id/stop', async () => {
     const cookie = await login();
     const stop = () => request(`/groups/${GROUP_ID}/stop`, { method: 'POST', cookie });
-    const group = { id: GROUP_ID, name: 'quiet', config: DEFAULTS, sessions: [2] };
+    const group = { id: GROUP_ID, name: 'quiet', config: DEFAULTS, sessions: [2, 2], opponents: [[], [{ model: 'slither-v7/latest.pt', count: 2 }]] };
     results.push({ rows: [group], rowCount: 1 });
     assert.equal((await stop()).status, 409);
 
     runningGroups.set(GROUP_ID, group);
-    worldStates[GROUP_ID] = [{ agents: 0 }, { agents: 2 }];
-    results.push({ rows: [group], rowCount: 1 });
+    worldStates[GROUP_ID] = [{ agents: 0, runs: [] }, { agents: 3, runs: ['run-play', 'run-play', 'run-trainer'] }];
+    results.push({ rows: [group], rowCount: 1 }, { rows: [{ id: 'run-play' }] });
     assert.equal((await stop()).status, 409);
+    assert.deepEqual(queries.at(-1).params, [['slither-v7-play']]);
 
-    worldStates[GROUP_ID] = [{ agents: 0 }, { agents: 0 }];
-    results.push({ rows: [group], rowCount: 1 });
+    worldStates[GROUP_ID] = [{ agents: 0, runs: [] }, { agents: 2, runs: ['run-play', 'run-play'] }];
+    results.push({ rows: [group], rowCount: 1 }, { rows: [{ id: 'run-play' }] });
     assert.equal((await stop()).status, 204);
     assert.equal(queries.at(-1).sql, 'UPDATE lab_groups SET running = false WHERE id = $1');
+    assert.deepEqual(opponentCalls, [['stop', GROUP_ID]]);
     assert.deepEqual(worldCalls, [['stop', GROUP_ID]]);
   });
 

@@ -1,5 +1,5 @@
 import { execFile, spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -52,5 +52,18 @@ export function createTrainer({ labUrl, labDir = LAB_DIR, python = process.env.L
     },
 
     stop: (pid) => process.kill(-pid, 'SIGINT'),
+
+    // Unlike trainers, opponents are the lab's own children: they stop with it, and running groups start them again.
+    play({ model, run: name, group, world, sessions }) {
+      const log = openSync(join(labDir, 'py/checkpoints', model.run, 'play.log'), 'a');
+      const child = spawn(
+        python,
+        ['py/play.py', '--model', join('py/checkpoints', model.run, model.file), '--groups', group,
+          '--world', String(world + 1), '--sessions', String(sessions), '--run', name],
+        { cwd: labDir, stdio: ['ignore', log, log], env: { ...process.env, PIXEL_SNAKE_LAB_URL: labUrl } },
+      );
+      closeSync(log);
+      return child;
+    },
   };
 }
