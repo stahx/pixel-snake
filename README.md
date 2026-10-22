@@ -64,8 +64,9 @@ See [CHANGELOG.md](./CHANGELOG.md) for recent changes.
 The lab is its own app (`apps/lab-server`), separate from the public game. It
 runs training worlds: Node child processes, each one a GameServer from the game
 package with its own map and bots, listening on 127.0.0.1 on a port the OS
-picks. Worlds take only trainer agents holding a token from the lab, serve no
-game client and never touch the database; they report episodes, trainer
+picks. Worlds take only trainer agents and lab panel viewers holding a token
+from the lab and never touch the database; the panel opens a world's game
+client to watch an agent or join as a player. Worlds report episodes, trainer
 metrics and live state to the lab over IPC. The lab aggregates progress
 windows (episode count, average/best score, survival, causes of death, the
 metrics trainers send with `game.log(...)`) and writes them to Postgres.

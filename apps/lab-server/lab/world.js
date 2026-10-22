@@ -1,13 +1,21 @@
+import express from 'express';
 import http from 'node:http';
 import { pathToFileURL } from 'node:url';
 import { Server } from 'socket.io';
+import { serveClient } from '@pixel-snake/backend/client';
 import GameServer from '@pixel-snake/backend/GameServer';
 import { GAME_CONFIG, configError } from '@pixel-snake/backend/Config';
 
 import { RUN_NAME, numbersError } from './agents.js';
-import { verifyToken } from './keys.js';
+import { HUMAN, verifyToken } from './keys.js';
 
 const STATE_MS = 1000;
+
+export function admitHumans(io, secret) {
+  io.use((socket, next) => (verifyToken(secret, socket.handshake.auth.token) === HUMAN
+    ? next()
+    : next(new Error('Open this world from the lab panel'))));
+}
 
 export function attachAgents({ io, game, secret, send }) {
   const namespace = io.of('/lab');
@@ -26,7 +34,7 @@ export function attachAgents({ io, game, secret, send }) {
   namespace.use((socket, next) => {
     const { token, run } = socket.handshake.auth;
     const runId = verifyToken(secret, token);
-    if (!runId) return next(new Error('Invalid world token: ask the lab for a new one'));
+    if (!runId || runId === HUMAN) return next(new Error('Invalid world token: ask the lab for a new one'));
     if (revoked.has(runId)) return next(new Error('Invalid or revoked lab key'));
     if (typeof run !== 'string' || !RUN_NAME.test(run)) return next(new Error(`Run name must match ${RUN_NAME}`));
     socket.data.agent = { runId, name: run };
@@ -45,7 +53,7 @@ export function attachAgents({ io, game, secret, send }) {
     socket.on('disconnect', sendState);
   });
 
-  game.on('episode-end', ({ agent, ...episode }) => send({ type: 'episode', runId: agent.runId, episode }));
+  game.on('episode-end', ({ agent, ...episode }) => agent && send({ type: 'episode', runId: agent.runId, episode }));
   setInterval(sendState, STATE_MS).unref();
 
   return {
@@ -66,10 +74,12 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
       console.error(`World: ${invalid}`);
       process.exit(1);
     }
-    const server = http.createServer((req, res) => res.writeHead(404).end());
+    const app = express();
+    const server = http.createServer(app);
     const io = new Server(server, { serveClient: false });
-    io.use((socket, next) => next(new Error('This world only takes lab agents')));
+    admitHumans(io, secret);
     const game = new GameServer(io, { ...GAME_CONFIG, ...config });
+    serveClient(app, game);
     const agents = attachAgents({ io, game, secret, send: (message) => process.send(message) });
 
     process.on('message', (message) => {

@@ -5,6 +5,7 @@ import { BarChart, LineChart } from 'echarts/charts';
 import { CanvasRenderer } from 'echarts/renderers';
 import { AriaComponent, GridComponent, LegendComponent, MarkAreaComponent, MarkLineComponent, TooltipComponent } from 'echarts/components';
 import VChart from 'vue-echarts';
+import { mergeWindows } from '../lab/progress.js';
 
 use([LineChart, BarChart, CanvasRenderer, GridComponent, TooltipComponent, LegendComponent, AriaComponent, MarkAreaComponent, MarkLineComponent]);
 
@@ -64,6 +65,7 @@ const compareColors = ref({});
 const compareData = ref({});
 const compareAxis = ref('time');
 const runAxis = ref('time');
+const runWindow = ref(30);
 const agentSort = ref({ key: 'score', desc: true });
 const page = ref(0);
 const draft = ref({});
@@ -72,6 +74,7 @@ const logs = ref([]);
 const logBox = ref(null);
 const newRun = ref(null);
 const startGroups = ref([]);
+const preview = ref(null);
 const models = ref([]);
 const groupData = ref({ limits: {}, defaults: {}, groups: [] });
 const groupDrafts = ref({});
@@ -305,22 +308,41 @@ const liveRun = computed(() => live.value.runs.find((r) => r.runId === runId.val
 const isLive = (id) => live.value.runs.some((r) => r.runId === id);
 const shortId = (agent) => agent.id.slice(0, 6);
 
-const sortedAgents = computed(() => {
+const agentOrder = ref([]);
+
+function orderAgents() {
   const { key, desc } = agentSort.value;
   const direction = desc ? -1 : 1;
-  return [...(liveRun.value?.agents ?? [])].sort((a, b) => (a[key] > b[key] ? direction : a[key] < b[key] ? -direction : 0));
+  agentOrder.value = [...(liveRun.value?.agents ?? [])]
+    .sort((a, b) => (a[key] > b[key] ? direction : a[key] < b[key] ? -direction : 0))
+    .map((agent) => agent.id);
+}
+watch(() => liveRun.value?.agents, () => { if (!preview.value) orderAgents(); }, { immediate: true });
+
+const sortedAgents = computed(() => {
+  const byId = new Map((liveRun.value?.agents ?? []).map((agent) => [agent.id, agent]));
+  const ordered = agentOrder.value.filter((id) => byId.has(id));
+  const added = [...byId.keys()].filter((id) => !agentOrder.value.includes(id));
+  return [...ordered, ...added].map((id) => byId.get(id));
 });
 const pageCount = computed(() => Math.max(1, Math.ceil(sortedAgents.value.length / PAGE_SIZE)));
 const pageAgents = computed(() => sortedAgents.value.slice(page.value * PAGE_SIZE, (page.value + 1) * PAGE_SIZE));
 watch(pageCount, (count) => { page.value = Math.min(page.value, count - 1); });
-watch(runId, () => { page.value = 0; });
+watch(runId, () => { page.value = 0; preview.value = null; });
 
 function sortAgents(key) {
   const { key: current, desc } = agentSort.value;
   agentSort.value = { key, desc: key === current ? !desc : ['alive', 'score', 'ticks'].includes(key) };
   page.value = 0;
+  orderAgents();
 }
-const rows = computed(() => progress.value.filter((r) => r.episodes > 0));
+function togglePreview(agent) {
+  preview.value = preview.value === agent.id ? null : agent.id;
+  if (!preview.value) orderAgents();
+}
+const closePreview = (event) => { if (event.key === 'Escape' && preview.value) togglePreview({ id: preview.value }); };
+const windows = computed(() => mergeWindows(progress.value, runWindow.value * 60_000));
+const rows = computed(() => windows.value.filter((r) => r.episodes > 0));
 const metricNames = computed(() => [...new Set(progress.value.flatMap((r) => Object.keys(r.metrics)))].sort());
 
 const tiles = computed(() => {
@@ -376,7 +398,7 @@ const line = (name, color, data) => ({
 // Runs trained before trainer starts were recorded have no starts, so a silence of several windows also counts as a break.
 const breaks = computed(() => {
   const windowMs = live.value.flushMinutes * 60_000;
-  const times = rows.value.map((r) => new Date(r.recorded_at).getTime());
+  const times = progress.value.filter((r) => r.episodes > 0).map((r) => new Date(r.recorded_at).getTime());
   const gaps = times.slice(1).map((to, i) => ({ from: times[i], to })).filter(({ from, to }) => to - from > 3 * windowMs)
     .map(({ from, to }) => ({ from, to, label: `przerwa ${pause(to - from)}` }));
   const starts = (run.value?.starts ?? []).map((at) => new Date(at).getTime())
@@ -452,16 +474,14 @@ const timeChart = (series, yFormat = (v) => number(v)) => {
   return option;
 };
 
-const scoreChart = computed(() => timeChart([
-  line('Średni wynik', SERIES[0], rows.value.map((r) => [r.recorded_at, r.score_avg])),
-  line('Najlepszy wynik', SERIES[1], rows.value.map((r) => [r.recorded_at, r.score_max])),
-]));
+const scoreChart = computed(() => timeChart([line('Średni wynik', SERIES[0], rows.value.map((r) => [r.recorded_at, r.score_avg]))]));
+const bestChart = computed(() => timeChart([line('Najlepszy wynik', SERIES[0], rows.value.map((r) => [r.recorded_at, r.score_max]))]));
 const survivalChart = computed(() => timeChart(
   [line('Średni czas życia', SERIES[0], rows.value.map((r) => [r.recorded_at, seconds(r.ticks_avg)]))],
   (v) => `${number(v)} s`,
 ));
 const deathChart = computed(() => {
-  const counted = progress.value.filter((r) => Object.keys(r.deaths).length);
+  const counted = windows.value.filter((r) => Object.keys(r.deaths).length);
   const option = chart(DEATHS
     .map(([cause, label, color]) => ({
       name: label,
@@ -481,7 +501,7 @@ const deathChart = computed(() => {
 });
 const metricCharts = computed(() => metricNames.value.map((name) => ({
   name,
-  option: timeChart([line(name, SERIES[0], progress.value
+  option: timeChart([line(name, SERIES[0], windows.value
     .filter((r) => r.metrics[name] != null)
     .map((r) => [r.recorded_at, r.metrics[name]]))]),
 })));
@@ -573,7 +593,11 @@ onMounted(async () => {
     }
   }, 2000);
 });
-onUnmounted(() => clearInterval(timer));
+onMounted(() => window.addEventListener('keydown', closePreview));
+onUnmounted(() => {
+  clearInterval(timer);
+  window.removeEventListener('keydown', closePreview);
+});
 </script>
 
 <template>
@@ -779,16 +803,33 @@ onUnmounted(() => clearInterval(timer));
                         {{ column.label }}<span v-if="agentSort.key === column.key">{{ agentSort.desc ? ' ↓' : ' ↑' }}</span>
                       </button>
                     </th>
+                    <th><span class="sr-only">Podgląd</span></th>
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="agent in pageAgents" :key="agent.id">
+                  <template v-for="agent in pageAgents" :key="agent.id">
+                  <tr :class="{ previewing: preview === agent.id }">
                     <td><code>{{ shortId(agent) }}</code></td>
                     <td>{{ agent.world }}</td>
                     <td>{{ agent.alive ? 'Żyje' : 'Czeka na respawn' }}</td>
                     <td>{{ number(agent.score) }}</td>
                     <td>{{ number(seconds(agent.ticks)) }} s</td>
+                    <td>
+                      <button class="ghost small" :disabled="!agent.view" :aria-expanded="preview === agent.id" @click="togglePreview(agent)">
+                        {{ preview === agent.id ? 'Zwiń' : 'Podgląd' }}
+                      </button>
+                    </td>
                   </tr>
+                  <tr v-if="preview === agent.id" class="preview-row">
+                    <td :colspan="AGENT_COLUMNS.length + 1">
+                      <iframe :src="agent.view" :title="`Podgląd agenta ${shortId(agent)}`"></iframe>
+                      <p class="muted">
+                        Widok agenta: tylko to, co jest w jego mgle. Kolejność tabeli stoi, dopóki podgląd jest otwarty.
+                        <a :href="agent.view" target="_blank" rel="noopener">Otwórz w nowej karcie</a>
+                      </p>
+                    </td>
+                  </tr>
+                  </template>
                 </tbody>
               </table>
             </div>
@@ -842,15 +883,26 @@ onUnmounted(() => clearInterval(timer));
 
           <p v-if="!progress.length" class="muted">Brak zapisanego postępu. Pierwszy zapis po upływie okna albo po rozłączeniu trenera.</p>
 
-          <div v-if="progress.length" class="segmented" role="group" aria-label="Oś pozioma">
-            <button :class="{ active: runAxis === 'time' }" @click="runAxis = 'time'">Czas</button>
-            <button :class="{ active: runAxis === 'episodes' }" @click="runAxis = 'episodes'">Łączne epizody</button>
+          <div v-if="progress.length" class="chart-controls">
+            <div class="segmented" role="group" aria-label="Oś pozioma">
+              <button :class="{ active: runAxis === 'time' }" @click="runAxis = 'time'">Czas</button>
+              <button :class="{ active: runAxis === 'episodes' }" @click="runAxis = 'episodes'">Łączne epizody</button>
+            </div>
+            <div class="segmented" role="group" aria-label="Okno uśredniania">
+              <button v-for="minutes in [live.flushMinutes, 30, 60]" :key="minutes" :class="{ active: runWindow === minutes }" @click="runWindow = minutes">
+                {{ minutes === 60 ? '1 h' : `${minutes} min` }}
+              </button>
+            </div>
           </div>
 
           <div v-if="progress.length" class="charts">
             <article class="card">
-              <h2>Wynik w epizodzie</h2>
+              <h2>Średni wynik</h2>
               <v-chart class="chart" :option="scoreChart" autoresize />
+            </article>
+            <article class="card">
+              <h2>Najlepszy wynik w oknie</h2>
+              <v-chart class="chart" :option="bestChart" autoresize />
             </article>
             <article class="card">
               <h2>Czas życia</h2>
@@ -878,7 +930,7 @@ onUnmounted(() => clearInterval(timer));
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="r in progress" :key="r.recorded_at">
+                  <tr v-for="r in windows" :key="r.recorded_at">
                     <td>{{ date(r.recorded_at) }}</td>
                     <td>{{ number(r.episodes) }}</td>
                     <td>{{ number(r.score_avg) }}</td>
@@ -900,6 +952,7 @@ onUnmounted(() => clearInterval(timer));
           Grupa to światy gry z tymi samymi ustawieniami. Każdy świat to osobny proces z własną mapą i botami, więc światy liczą się na osobnych rdzeniach.
           Trener z <code>--groups</code> dostaje adres i token każdego świata oraz liczbę sesji, które ma w nim grać, a po restarcie świata pyta o nowy adres.
           Tempo gry przyspiesza grę: mechanika i boty liczą czas w tickach, więc agenci grają w tę samą grę, tylko szybciej.
+          „Otwórz” pokazuje świat w nowej karcie: możesz patrzeć albo dołączyć jako gracz.
         </p>
 
         <form v-for="card in groupCards" :key="card.group?.id ?? 'new'" class="card group" @submit.prevent="card.group ? saveGroup(card) : createGroup()">
@@ -920,7 +973,7 @@ onUnmounted(() => clearInterval(timer));
 
           <div v-if="card.group?.running" class="table-scroll">
             <table>
-              <thead><tr><th>Świat</th><th>Port</th><th>Ticki/s</th><th>Krok</th><th>Sesje</th></tr></thead>
+              <thead><tr><th>Świat</th><th>Port</th><th>Ticki/s</th><th>Krok</th><th>Sesje</th><th><span class="sr-only">Podgląd</span></th></tr></thead>
               <tbody>
                 <tr v-for="(world, index) in card.group.worlds" :key="index">
                   <td>#{{ index + 1 }} <span class="muted">PID {{ world.pid }}</span></td>
@@ -928,6 +981,7 @@ onUnmounted(() => clearInterval(timer));
                   <td>{{ number(world.tps) }}</td>
                   <td>{{ world.stepMs == null ? '—' : `${number(world.stepMs)} ms` }}</td>
                   <td>{{ world.agents }} / {{ card.group.sessions[index] }}</td>
+                  <td><a v-if="world.view" :href="world.view" target="_blank" rel="noopener">Otwórz</a></td>
                 </tr>
               </tbody>
             </table>

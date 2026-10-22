@@ -67,7 +67,11 @@ describe('lab/worlds', { timeout: 20_000 }, () => {
     assert.deepEqual(worlds.state('group-1').map((world) => world.agents).sort(), [0, 1]);
 
     await assert.rejects(connected(connect(`${second.url}/lab`, { token: first.token, run: 'ppo-run-1' })), /Invalid world token/);
-    await assert.rejects(connected(connect(first.url, {})), /only takes lab agents/);
+    const { view } = worlds.state('group-1')[0];
+    assert.equal(view.split('#')[0], `${first.url}/`);
+    assert.match(await (await fetch(view)).text(), /class\/GameClient\.js/);
+    await connected(connect(first.url, { token: new URL(view).hash.replace('#token=', '') }));
+    await assert.rejects(connected(connect(first.url, {})), /Open this world from the lab panel/);
   });
 
   test('start (restart)', async () => {

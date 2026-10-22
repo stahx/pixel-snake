@@ -1,4 +1,5 @@
 const SERVER_TICK_MS = 1000 / 60;
+const LAB_TOKEN = new URLSearchParams(location.hash.slice(1)).get('token');
 
 class GameClient {
   constructor() {
@@ -18,7 +19,7 @@ class GameClient {
     this.canvas = document.querySelector('#canvas');
     this.ctx = this.canvas.getContext('2d');
 
-    this.socket = io('');
+    this.socket = io('', { auth: { token: LAB_TOKEN } });
 
     this.leaderboard = [];
     this.entityMap = new Map();
@@ -1382,7 +1383,7 @@ class GameClient {
     this.#resetState();
     clearInterval(this.pingIntervalId);
     this.socket.disconnect();
-    this.socket = io('');
+    this.socket = io('', { auth: { token: LAB_TOKEN } });
     this.spectatorX = Math.random() * this.worldWidth;
     this.spectatorY = Math.random() * this.worldHeight;
     this.spectatorDX =

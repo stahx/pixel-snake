@@ -4,6 +4,8 @@ export const createKey = () => `psl_${randomBytes(24).toString('base64url')}`;
 
 export const hashKey = (key) => createHash('sha256').update(key).digest('hex');
 
+export const HUMAN = 'human';
+
 export const worldToken = (secret, runId) => `${runId}.${createHmac('sha256', secret).update(runId).digest('base64url')}`;
 
 export function verifyToken(secret, token) {

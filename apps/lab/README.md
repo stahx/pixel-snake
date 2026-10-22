@@ -134,8 +134,8 @@ while True:
 ```
 
 A world runs at 60 ticks/s times its group's game speed, with its own bots;
-humans do not join worlds yet. Several agents can train in parallel by opening
-several `Game` connections.
+humans join only from the lab panel (Otwórz on a world, Podgląd on an agent).
+Several agents can train in parallel by opening several `Game` connections.
 
 ## Many agents, many worlds
 

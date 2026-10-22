@@ -39,7 +39,11 @@ export function attachLab({ worlds, pool, flushMinutes }) {
   }
 
   const agents = () => worlds.all().flatMap((world) => (world.state?.agents ?? [])
-    .map((agent) => ({ ...agent, world: `${world.group.name} #${world.index + 1}` })));
+    .map((agent) => ({
+      ...agent,
+      world: `${world.group.name} #${world.index + 1}`,
+      view: worlds.view(world, `?follow=${encodeURIComponent(agent.id)}`),
+    })));
 
   // A world reports its agents on every connect and disconnect, before any episode of a new agent,
   // so a run missing from every report has left the lab.

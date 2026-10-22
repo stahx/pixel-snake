@@ -4,7 +4,7 @@ import { EventEmitter } from 'node:events';
 import { fileURLToPath } from 'node:url';
 
 import { numbersError } from './agents.js';
-import { worldToken } from './keys.js';
+import { HUMAN, worldToken } from './keys.js';
 
 const WORLD = fileURLToPath(new URL('./world.js', import.meta.url));
 const RESTART_MS = 1000;
@@ -23,9 +23,11 @@ export function createWorlds({ file = WORLD, restartMs = RESTART_MS } = {}) {
   const groups = new Map();
   const worlds = new EventEmitter();
   const label = (world) => `${world.group.name} #${world.index + 1}`;
+  const view = (world, query = '') => world.port && `http://127.0.0.1:${world.port}/${query}#token=${world.viewToken}`;
 
   function spawn(group, index) {
-    const world = { group, index, secret: randomBytes(32).toString('base64url'), port: null, state: null };
+    const secret = randomBytes(32).toString('base64url');
+    const world = { group, index, secret, viewToken: worldToken(secret, HUMAN), port: null, state: null };
     world.child = fork(file);
     group.worlds[index] = world;
     world.child.send({ type: 'start', config: group.config, secret: world.secret });
@@ -71,6 +73,7 @@ export function createWorlds({ file = WORLD, restartMs = RESTART_MS } = {}) {
     },
     send: (message) => sendTo(worlds.all(), message),
     all: () => [...groups.values()].flatMap((running) => running.worlds),
+    view,
     resolve: (name, runId) => byName(name)?.worlds.map((world, index) => ({
       url: world.port && `http://127.0.0.1:${world.port}`,
       token: world.port && worldToken(world.secret, runId),
@@ -79,6 +82,7 @@ export function createWorlds({ file = WORLD, restartMs = RESTART_MS } = {}) {
     state: (id) => (groups.get(id)?.worlds ?? []).map((world) => ({
       pid: world.child.pid,
       port: world.port,
+      view: view(world),
       tps: world.state?.tps ?? null,
       stepMs: world.state?.stepMs ?? null,
       agents: world.state?.agents.length ?? 0,

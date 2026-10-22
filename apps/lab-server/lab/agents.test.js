@@ -33,6 +33,7 @@ describe('lab/agents', () => {
     worlds = Object.assign(new EventEmitter(), {
       list: [],
       all() { return this.list; },
+      view: (from, query) => `${from.group.name}/${query}`,
       send: (message) => sent.push(message),
     });
     lab = attachLab({ worlds, pool, flushMinutes: 5 });
@@ -50,12 +51,16 @@ describe('lab/agents', () => {
       {
         runId: RUN_ID,
         agents: [
-          { id: 'a-1', alive: true, score: 3, ticks: 60, world: 'quiet #1' },
-          { id: 'a-2', alive: true, score: 3, ticks: 60, world: 'crowded #2' },
+          { id: 'a-1', alive: true, score: 3, ticks: 60, world: 'quiet #1', view: 'quiet/?follow=a-1' },
+          { id: 'a-2', alive: true, score: 3, ticks: 60, world: 'crowded #2', view: 'crowded/?follow=a-2' },
         ],
         pending: { episodes: 1, scoreAvg: 8, scoreMax: 8, ticksAvg: 300, eatenAvg: 9, boostAvg: 1, deaths: { bot: 1 }, metrics: {} },
       },
-      { runId: 'run-2', agents: [{ id: 'b-1', alive: true, score: 3, ticks: 60, world: 'crowded #2' }], pending: null },
+      {
+        runId: 'run-2',
+        agents: [{ id: 'b-1', alive: true, score: 3, ticks: 60, world: 'crowded #2', view: 'crowded/?follow=b-1' }],
+        pending: null,
+      },
     ]);
   });
 

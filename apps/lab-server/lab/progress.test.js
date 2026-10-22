@@ -78,5 +78,11 @@ describe('lab/progress', () => {
         score_avg: null, ticks_avg: null, eaten_avg: null, boost_avg: null, metrics: { loss: 2 },
       },
     ]);
+    assert.deepEqual(mergeWindows(mergeWindows(rows, 5 * 60_000), 60 * 60_000), [
+      {
+        recorded_at: '2026-10-18T15:33:14.200Z', episodes: 4, score_max: 90, deaths: { bot: 3, agent: 1 },
+        score_avg: 25, ticks_avg: 600, eaten_avg: 5, boost_avg: 1, metrics: { loss: 2, entropy: 1 },
+      },
+    ]);
   });
 });

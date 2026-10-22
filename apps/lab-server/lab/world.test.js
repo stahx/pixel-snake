@@ -2,8 +2,8 @@ import { beforeEach, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 
-import { worldToken } from './keys.js';
-import { attachAgents } from './world.js';
+import { HUMAN, worldToken } from './keys.js';
+import { admitHumans, attachAgents } from './world.js';
 
 const SECRET = 'world-secret';
 const RUN_ID = 'run-1';
@@ -62,10 +62,23 @@ describe('lab/world', () => {
     agents = attachAgents({ io, game, secret: SECRET, send: (message) => sent.push(message) });
   });
 
+  test('admitHumans', async () => {
+    let gate;
+    admitHumans({ use: (fn) => { gate = fn; } }, SECRET);
+    const admit = (auth) => new Promise((resolve) => gate(fakeSocket('human-1', auth), resolve));
+
+    assert.equal(await admit({ token: worldToken(SECRET, HUMAN) }), undefined);
+    assert.equal((await admit({})).message, 'Open this world from the lab panel');
+    assert.equal((await admit({ token: worldToken(SECRET, RUN_ID) })).message, 'Open this world from the lab panel');
+    assert.equal((await admit({ token: worldToken('other-secret', HUMAN) })).message, 'Open this world from the lab panel');
+  });
+
   test('attachAgents', async () => {
     assert.match((await authorize(fakeSocket('a', {}))).message, /^Invalid world token/);
     const forged = await authorize(fakeSocket('a', { token: worldToken('other-secret', RUN_ID), run: 'ppo-run-1' }));
     assert.match(forged.message, /^Invalid world token/);
+    const human = await authorize(fakeSocket('a', { token: worldToken(SECRET, HUMAN), run: 'ppo-run-1' }));
+    assert.match(human.message, /^Invalid world token/);
     const badRun = await authorize(fakeSocket('a', { token: worldToken(SECRET, RUN_ID), run: '..' }));
     assert.match(badRun.message, /^Run name must match/);
 
@@ -94,9 +107,10 @@ describe('lab/world', () => {
 
   test('attachAgents (episode)', async () => {
     const socket = await connectAgent('agent-1');
+    game.emit('episode-end', { ...EPISODE, agent: null });
     game.emit('episode-end', { ...EPISODE, agent: socket.data.agent });
 
-    assert.deepEqual(sent.at(-1), { type: 'episode', runId: RUN_ID, episode: EPISODE });
+    assert.deepEqual(sent.filter((message) => message.type === 'episode'), [{ type: 'episode', runId: RUN_ID, episode: EPISODE }]);
   });
 
   test('revoke', async () => {

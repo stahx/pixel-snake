@@ -6,7 +6,8 @@
 	"exports": {
 		"./GameServer": "./class/GameServer.js",
 		"./Config": "./class/Config.js",
-		"./login": "./helpers/login.js"
+		"./login": "./helpers/login.js",
+		"./client": "./helpers/client.js"
 	},
 	"type": "module",
 	"scripts": {

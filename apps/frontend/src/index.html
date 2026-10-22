@@ -315,7 +315,7 @@
         false,
       );
 
-      if (window.goatcounter && goatcounter.count) {
+      if (window.goatcounter && goatcounter.count && !LAB_TOKEN) {
         goatcounter.count();
       }
     </script>
