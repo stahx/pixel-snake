@@ -3,12 +3,12 @@ import json
 import math
 import os
 import queue
-import random
 import shutil
 import signal
 import sys
 import threading
 import time
+from functools import partial
 from pathlib import Path
 
 import numpy as np
@@ -17,21 +17,11 @@ import torch.multiprocessing as mp
 from torch import nn
 from torch.distributions import Categorical
 
+from controller import keep_playing, play
+from model import ACTIONS, ActorCritic, act, radar
 from pixel_snake_lab import Game, find_worlds, stream_output, sync_config
 
-TURNS = (-0.32, -0.16, 0.0, 0.16, 0.32)
-ACTIONS = [(turn, boost) for turn in TURNS for boost in (False, True)]
-TICKS_PER_ACTION = (3, 6)
 PROCESS_SESSIONS = 5
-RECONNECT_SECONDS = 5
-
-GRID_SIZE = 24
-GRID_CELL = 50.0
-FOOD, ENEMY_TAIL, ENEMY_HEAD, ENEMY_FORWARD, ENEMY_RIGHT, ENEMY_BOOST, ENEMY_SIZE, OWN_TAIL, VISIBLE = range(9)
-GRID_CHANNELS = 9
-SELF_FEATURES = 4
-RADAR_FEATURES = GRID_CHANNELS * GRID_SIZE * GRID_SIZE + SELF_FEATURES
-HIDDEN_SIZE = 128
 DEVICE = torch.accelerator.current_accelerator() or torch.device('cpu')
 
 PARAMETERS = {
@@ -56,82 +46,7 @@ PARAMETERS = {
 
 HERE = Path(__file__).resolve().parent
 CHECKPOINTS = HERE.parent if HERE.parent.name == 'checkpoints' else HERE / 'checkpoints'
-
-
-class ActorCritic(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.vision = nn.Sequential(
-            nn.Unflatten(-1, (GRID_CHANNELS, GRID_SIZE, GRID_SIZE)),
-            nn.Conv2d(GRID_CHANNELS, 16, 3, stride=2, padding=1), nn.ReLU(),
-            nn.Conv2d(16, 32, 3, stride=2, padding=1), nn.ReLU(),
-            nn.Flatten(start_dim=-3),
-        )
-        self.body = nn.Sequential(
-            nn.Linear(32 * (GRID_SIZE // 4) ** 2 + SELF_FEATURES, HIDDEN_SIZE), nn.Tanh(),
-            nn.Linear(HIDDEN_SIZE, HIDDEN_SIZE), nn.Tanh(),
-        )
-        self.policy = nn.Linear(HIDDEN_SIZE, len(ACTIONS))
-        self.value = nn.Linear(HIDDEN_SIZE, 1)
-
-    def forward(self, state):
-        grid, own = state[..., :-SELF_FEATURES], state[..., -SELF_FEATURES:]
-        hidden = self.body(torch.cat([self.vision(grid), own], dim=-1))
-        return self.policy(hidden), self.value(hidden).squeeze(-1)
-
-
-def wrapped(delta, size):
-    return (delta + size / 2) % size - size / 2
-
-
-CELL_GAPS = np.abs(np.arange(GRID_SIZE) - GRID_SIZE / 2 + 0.5) * GRID_CELL - GRID_CELL / 2
-CELL_NEAREST = np.hypot(*np.meshgrid(CELL_GAPS, CELL_GAPS, indexing='ij'))
-
-
-def fog_radius(me, info):
-    fog, growth = info['fogRadius'], info['growth']
-    progress = min(1.0, max(0.0, (me['size'] - growth['spawnSize']) / (growth['maxSize'] - growth['spawnSize'])))
-    return fog['min'] + (fog['max'] - fog['min']) * progress
-
-
-def radar(observation, info, elapsed):
-    me = observation['me']
-    width, height = info['map']['width'], info['map']['height']
-    head_x = me['x'] + me['size'] / 2
-    head_y = me['y'] + me['size'] / 2
-    cos, sin = math.cos(me['angle']), math.sin(me['angle'])
-    entities = observation['entities'].values()
-    sizes = {entity['player']: entity['size'] for entity in entities if entity['type'] == 'player'}
-
-    grid = np.zeros((GRID_CHANNELS, GRID_SIZE, GRID_SIZE), dtype=np.float32)
-    for entity in entities:
-        if entity is me:
-            continue
-        half = entity.get('size', sizes.get(entity.get('player'), 0)) / 2
-        dx = wrapped(entity['x'] + half - head_x, width)
-        dy = wrapped(entity['y'] + half - head_y, height)
-        row = math.floor(-(dx * cos + dy * sin) / GRID_CELL) + GRID_SIZE // 2
-        column = math.floor((-dx * sin + dy * cos) / GRID_CELL) + GRID_SIZE // 2
-        if not (0 <= row < GRID_SIZE and 0 <= column < GRID_SIZE):
-            continue
-        if entity['type'] == 'point':
-            grid[FOOD, row, column] += 1
-        elif entity['type'] == 'player':
-            heading = entity['angle'] - me['angle']
-            grid[ENEMY_HEAD, row, column] = 1
-            grid[ENEMY_FORWARD, row, column] = math.cos(heading)
-            grid[ENEMY_RIGHT, row, column] = math.sin(heading)
-            grid[ENEMY_BOOST, row, column] = float(bool(entity.get('boosting')))
-            grid[ENEMY_SIZE, row, column] = math.log(entity['size'] / me['size'])
-        else:
-            grid[OWN_TAIL if entity['player'] == me['player'] else ENEMY_TAIL, row, column] = 1
-
-    grid[FOOD] = np.minimum(grid[FOOD], 5)
-    # The server measures fog between top-left corners, so anything up to half a cell past the radius can still show.
-    grid[VISIBLE] = CELL_NEAREST <= fog_radius(me, info) + GRID_CELL / 2
-    own = [math.log1p(me['points']) / 5, float(bool(me.get('boosting'))), me['size'] / info['growth']['maxSize'],
-           min(elapsed, 24) / 6]
-    return np.concatenate([grid.ravel(), own]).astype(np.float32)
+RUN_FILES = ('model.py', 'controller.py', 'pixel_snake_lab.py')
 
 
 def parameters(values, source):
@@ -165,23 +80,13 @@ def advantages(rewards, values, dones, last_value, config):
     return result, result + np.asarray(values, dtype=np.float32)
 
 
-def act(net, state):
-    with torch.no_grad():
-        logits, value = net(torch.as_tensor(state))
-    distribution = Categorical(logits=logits)
-    action = distribution.sample()
-    return action.item(), distribution.log_prob(action).item(), value.item()
-
-
-def play_session(group, world, run, net, rollouts, learner_stats, label, config):
+def train_session(group, world, run, net, rollouts, learner_stats, label, config):
     game = Game(group, run=run, world=world)
-    observation = game.observe()
     segment = {'states': [], 'actions': [], 'log_probs': [], 'values': [], 'rewards': [], 'dones': []}
     episode_return = 0.0
     episode_kills = 0
     steps = 0
     dropped = 0
-    ticks = elapsed = random.randint(*TICKS_PER_ACTION)
 
     def send(last_value):
         nonlocal dropped
@@ -195,34 +100,18 @@ def play_session(group, world, run, net, rollouts, learner_stats, label, config)
         for values in segment.values():
             values.clear()
 
-    while True:
-        if not observation['alive']:
-            game.respawn()
-            observation = game.observe()
-            ticks = elapsed = random.randint(*TICKS_PER_ACTION)
-            continue
-        state = radar(observation, game.info, elapsed)
-        action, log_prob, value = act(net, state)
-        turn, boost = ACTIONS[action]
-        me = observation['me']
-        game.steer(me['angle'] + turn)
-        game.boost(boost and me['points'] > 0)
-        while True:
-            next_observation = game.observe()
-            if not next_observation['alive'] or next_observation['tick'] - observation['tick'] >= ticks:
-                break
-        elapsed = next_observation['tick'] - observation['tick']
-        reward = reward_for(observation, next_observation, config)
-        done = not next_observation['alive']
-        for name, item in (('states', state), ('actions', action), ('log_probs', log_prob),
-                           ('values', value), ('rewards', reward * config['reward_scale']), ('dones', float(done))):
+    for step in play(game, net):
+        reward = reward_for(step.observation, step.next_observation, config)
+        done = not step.next_observation['alive']
+        for name, item in (('states', step.state), ('actions', step.action), ('log_probs', step.log_prob),
+                           ('values', step.value), ('rewards', reward * config['reward_scale']), ('dones', float(done))):
             segment[name].append(item)
         episode_return += reward
         steps += 1
 
         if done:
             send(0.0)
-            metrics = {'reward': episode_return, 'steps': steps, 'kills': next_observation['kills'] - episode_kills,
+            metrics = {'reward': episode_return, 'steps': steps, 'kills': step.next_observation['kills'] - episode_kills,
                        'dropped_steps': dropped}
             try:
                 metrics.update(learner_stats.get_nowait())
@@ -231,30 +120,19 @@ def play_session(group, world, run, net, rollouts, learner_stats, label, config)
             game.log(**metrics)
             print(f'{label}: return {episode_return:.1f}, steps {steps}', flush=True)
             episode_return, steps, dropped = 0.0, 0, 0
-            episode_kills = next_observation['kills']
+            episode_kills = step.next_observation['kills']
         elif len(segment['actions']) >= config['segment_steps']:
-            send(act(net, radar(next_observation, game.info, elapsed))[2])
-        observation = next_observation
-
-
-def keep_playing(group, world, run, net, rollouts, learner_stats, label, config):
-    while True:
-        started = time.monotonic()
-        try:
-            play_session(group, world, run, net, rollouts, learner_stats, label, config)
-        except ConnectionError as error:
-            if time.monotonic() - started > RECONNECT_SECONDS:
-                print(f'{label}: {error}, reconnecting', flush=True)
-            time.sleep(RECONNECT_SECONDS)
+            send(act(net, radar(step.next_observation, game.info, step.elapsed))[2])
 
 
 def play_world(group, world, run, numbers, net, rollouts, learner_stats, config):
     torch.set_num_threads(1)
     rollouts.cancel_join_thread()
-    threads = [threading.Thread(target=keep_playing, daemon=True,
-                                args=(group, world, run, net, rollouts, learner_stats,
-                                      f'{group} #{world + 1} session {number}', config))
-               for number in numbers]
+    threads = []
+    for number in numbers:
+        label = f'{group} #{world + 1} session {number}'
+        session = partial(train_session, group, world, run, net, rollouts, learner_stats, label, config)
+        threads.append(threading.Thread(target=keep_playing, args=(session, label), daemon=True))
     for thread in threads:
         thread.start()
     try:
@@ -324,11 +202,6 @@ def learn(net, shared, optimizer, update, rollouts, learner_stats, folder, confi
     print(f'saved {folder / "latest.pt"} at update {update}')
 
 
-class Discard:
-    def put(self, item):
-        pass
-
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--groups', required=True,
@@ -336,41 +209,35 @@ if __name__ == '__main__':
     parser.add_argument('--run', default='ppo-1')
     parser.add_argument('--updates', type=int, help='stop after this many model updates in this run (default: until Ctrl+C)')
     parser.add_argument('--model', type=Path, help="checkpoint to start from (default: this run's latest.pt if it exists)")
-    parser.add_argument('--play', action='store_true', help="play the model without training, logged as <run>-play")
     for name, default in PARAMETERS.items():
         parser.add_argument(f'--{name.replace("_", "-")}', dest=name, type=type(default), metavar=str(default),
                             help="overrides checkpoints/<run>/config.json and the lab panel")
     args = parser.parse_args()
-    run = f'{args.run}-play' if args.play else args.run
 
     folder = CHECKPOINTS / args.run
     trainer = folder / 'trainer.py'
     if trainer.exists() and trainer.resolve() != Path(__file__).resolve():
         print(f'run {args.run} has its own trainer: {trainer}', flush=True)
         os.execv(sys.executable, [sys.executable, str(trainer), *sys.argv[1:]])
-    stream_output(run)
+    stream_output(args.run)
 
     config_file = folder / 'config.json'
     overrides = {name: getattr(args, name) for name in PARAMETERS if getattr(args, name) is not None}
     try:
         saved = PARAMETERS | parameters(json.loads(config_file.read_text()) if config_file.exists() else {}, config_file)
-        config = (saved | overrides if args.play else
-                  parameters(sync_config(args.run, saved, overrides), 'the lab panel'))
-        worlds = [(group, world, found['sessions']) for group, listed in find_worlds(run, args.groups.split(',')).items()
+        config = parameters(sync_config(args.run, saved, overrides), 'the lab panel')
+        worlds = [(group, world, found['sessions']) for group, listed in find_worlds(args.run, args.groups.split(',')).items()
                   for world, found in enumerate(listed)]
     except (ValueError, OSError) as error:
         sys.exit(f'{parser.prog}: error: {error}')
-    if not args.play:
-        folder.mkdir(parents=True, exist_ok=True)
-        config_file.write_text(json.dumps(config, indent=2) + '\n')
-        changed = {name: value for name, value in config.items() if value != saved[name]}
-        print(f'parameters: {config_file}' + (f', changed: {changed}' if changed else ''), flush=True)
+    folder.mkdir(parents=True, exist_ok=True)
+    config_file.write_text(json.dumps(config, indent=2) + '\n')
+    changed = {name: value for name, value in config.items() if value != saved[name]}
+    print(f'parameters: {config_file}' + (f', changed: {changed}' if changed else ''), flush=True)
 
     update = 0
     model = args.model or folder / 'latest.pt'
     checkpoint = torch.load(model, weights_only=True, map_location='cpu') if args.model or model.exists() else None
-    if args.play and not checkpoint:
-        parser.error(f'no model at {model}')
     net = ActorCritic()
     learner = ActorCritic().to(DEVICE)
     optimizer = torch.optim.Adam(learner.parameters())
@@ -384,23 +251,10 @@ if __name__ == '__main__':
         print(f'new model for run {args.run}', flush=True)
     for group in optimizer.param_groups:
         group['lr'] = config['learning_rate']
-    if not trainer.exists() and not args.play:
+    if not trainer.exists():
         shutil.copy(__file__, trainer)
-        shutil.copy(HERE / 'pixel_snake_lab.py', folder)
-
-    if args.play:
-        sessions = [threading.Thread(target=keep_playing, daemon=True,
-                                     args=(group, world, run, net, Discard(), queue.Queue(),
-                                           f'{group} #{world + 1} session {number}', config))
-                    for group, world, count in worlds for number in range(count)]
-        for session in sessions:
-            session.start()
-        try:
-            for session in sessions:
-                session.join()
-        except KeyboardInterrupt:
-            pass
-        sys.exit()
+        for name in RUN_FILES:
+            shutil.copy(HERE / name, folder)
 
     net.share_memory()
     # Sessions drop segments the learner has no room for, so it always trains on what the current policy just played.

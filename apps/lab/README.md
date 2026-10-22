@@ -33,7 +33,10 @@ node js/ppo-agent.js --groups quiet
 | `game.observe()` blocks | `await game.observe()` |
 | `game.log(loss=0.1)` | `game.log({ loss: 0.1 })` |
 | `example_agent.py`: random baseline | — |
+| `model.py`: the network, the radar it sees through, `load(checkpoint)` | — |
+| `controller.py`: plays one snake with a network (observe, decide, steer, respawn) | — |
 | `ppo_agent.py`: PPO in PyTorch | `ppo-agent.js`: PPO in TensorFlow.js |
+| `play.py`: plays a checkpoint without training | — |
 
 ## How the agent connects
 
@@ -162,7 +165,7 @@ shared by every session:
 python py/ppo_agent.py --groups quiet --run ppo-1
 python py/ppo_agent.py --groups quiet,crowded --run ppo-1   # 10 worlds × 1 session and 10 × 10, say
 python py/ppo_agent.py --groups quiet --run ppo-2 --model py/checkpoints/ppo-1/update-800.pt
-python py/ppo_agent.py --groups quiet --run ppo-1 --play
+python py/play.py --groups quiet --model py/checkpoints/ppo-1/latest.pt
 node js/ppo-agent.js --groups quiet --run ppo-js-1
 ```
 
@@ -195,15 +198,16 @@ start it again); a running trainer keeps its parameters. The network layout
 
 Everything the trainer prints (the learner, every session, tracebacks) goes to
 the terminal as before and to the run's log in the panel (run → Logi trenera),
-which keeps the last 2000 lines per run. `--play` logs to `<run>-play`. Other
+which keeps the last 2000 lines per run. `play.py` logs to `<run>-play`. Other
 trainers can do the same with `stream_output(run)` from the SDK.
 
 A new Python run copies the trainer into its folder as
-`checkpoints/<run>/trainer.py` (with `pixel_snake_lab.py`). Starting
+`checkpoints/<run>/trainer.py` (with `model.py`, `controller.py` and
+`pixel_snake_lab.py`). Starting
 `py/ppo_agent.py --run <run>` later hands over to that copy, so every run keeps
 training and playing with the algorithm it started with, whatever
-`ppo_agent.py` has become since. `--play` runs the model without training and
-logs it to the panel as `<run>-play`.
+`ppo_agent.py` has become since. `play.py` builds the network from
+`py/model.py`, so a checkpoint saved by an older layout needs that run's copy.
 
 - Observation (Python): a 24×24 grid of 50 px cells around the head, rotated so
   the heading points up, with layers for food (count, up to 5), enemy tails,
