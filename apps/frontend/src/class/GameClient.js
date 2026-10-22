@@ -261,6 +261,7 @@ class GameClient {
     this.menu.style.display = 'none';
     this.leaderboardElement.style.display = 'block';
     this.game.style.display = 'block';
+    document.querySelector('#deathscreen').style.display = 'none';
     this.gameRunning = true;
     this.#showMobileControls();
     this.#syncThemeToggleVisibility();

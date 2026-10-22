@@ -156,7 +156,7 @@
         <div class="deathscreen-content">
           <div class="deathscreen-title">Nie żyjesz</div>
           <div class="deathscreen-buttons">
-            <button onclick="restart()">Graj od nowa</button>
+            <button onclick="game.start(document.querySelector('#name-input').value)">Graj od nowa</button>
             <button onclick="game.returnToMenu()">Return to Menu</button>
           </div>
         </div>
@@ -270,11 +270,6 @@
           });
         })
         .catch(() => {});
-
-      function restart() {
-        game.start(document.querySelector('#name-input').value);
-        document.querySelector('#deathscreen').style.display = 'none';
-      }
 
       document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape' && game.isGameRunning()) {
