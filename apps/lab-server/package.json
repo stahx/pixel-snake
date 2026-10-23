@@ -1,0 +1,27 @@
+{
+  "name": "@pixel-snake/lab-server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "build": "vite build",
+    "dev": "vite build --watch",
+    "db:migrate": "node db/migrate.js",
+    "test": "node --test lab/*.test.js"
+  },
+  "dependencies": {
+    "@pixel-snake/backend": "workspace:*",
+    "dotenv": "^17.2.3",
+    "echarts": "^6.1.0",
+    "express": "^4.21.2",
+    "pg": "^8.23.1",
+    "socket.io": "^4.8.1",
+    "vue": "^3.5.25",
+    "vue-echarts": "^8.3.2"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.10",
+    "socket.io-client": "^4.8.1",
+    "vite": "^8.3.4"
+  }
+}

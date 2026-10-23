@@ -15,6 +15,9 @@ class Player extends Entity {
     this.diffY = options.diffY || 0;
     this.tailCounter = options.tailCounter || 0;
     this.currentAngle = options.currentAngle || Math.random() * Math.PI * 2;
+    this.maxPoints = this.points;
+    this.eaten = 0;
+    this.boostSpent = 0;
   }
 }
 

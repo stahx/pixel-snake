@@ -1,4 +1,6 @@
 const SERVER_TICK_MS = 1000 / 60;
+const LAB_TOKEN = new URLSearchParams(location.hash.slice(1)).get('token');
+const FOLLOW = new URLSearchParams(location.search).get('follow');
 
 class GameClient {
   constructor() {
@@ -18,7 +20,7 @@ class GameClient {
     this.canvas = document.querySelector('#canvas');
     this.ctx = this.canvas.getContext('2d');
 
-    this.socket = io('');
+    this.socket = io('', { auth: { token: LAB_TOKEN, follow: FOLLOW } });
 
     this.leaderboard = [];
     this.entityMap = new Map();
@@ -27,6 +29,9 @@ class GameClient {
     this.lastUpdateTime = performance.now();
 
     this.player = null;
+    this.followId = FOLLOW;
+    if (this.followId) this.menu.style.display = 'none';
+    this.followed = null;
     this._uiDirty = false;
 
     this.canvas.width = window.innerWidth;
@@ -42,6 +47,7 @@ class GameClient {
     this.cameraY = 0;
     this.zoom = 1;
     this._targetZoom = 1;
+    this.fogRadius = { min: 300, max: 2500 };
 
     this.spectatorX = 2000;
     this.spectatorY = 2000;
@@ -257,6 +263,7 @@ class GameClient {
     this.menu.style.display = 'none';
     this.leaderboardElement.style.display = 'block';
     this.game.style.display = 'block';
+    document.querySelector('#deathscreen').style.display = 'none';
     this.gameRunning = true;
     this.#showMobileControls();
     this.#syncThemeToggleVisibility();
@@ -440,6 +447,10 @@ class GameClient {
   #setupUpdateHandler() {
     const typeMap = ['point', 'tail', 'player'];
 
+    this.socket.on('env-info', (info) => {
+      this.fogRadius = info.fogRadius;
+    });
+
     this.socket.on('ded', () => {
       document.querySelector('#deathscreen').style.display = 'flex';
     });
@@ -480,6 +491,9 @@ class GameClient {
 
           if (entity.type === 'player' && entity.playerId == this.socket.id) {
             this.player = entity;
+          }
+          if (entity.type === 'player' && entity.playerId === this.followId) {
+            this.followed = entity;
           }
         }
       }
@@ -553,7 +567,7 @@ class GameClient {
 
           if (upd.x !== undefined) entity.x = upd.x;
           if (upd.y !== undefined) entity.y = upd.y;
-          if (upd.s !== undefined && entity.type !== 'tail') entity.size = upd.s;
+          if (upd.s !== undefined) entity.size = upd.s;
           if (upd.a !== undefined) entity.angle = upd.a;
 
           if (upd.b !== undefined) entity._remoteBoosting = !!upd.b;
@@ -571,6 +585,9 @@ class GameClient {
         for (const id of data.r) {
           if (this.player && id === this.player.id) {
             this.player = null;
+          }
+          if (this.followed && id === this.followed.id) {
+            this.followed = null;
           }
           this.entityMap.delete(id);
           this.prevPositions.delete(id);
@@ -610,7 +627,7 @@ class GameClient {
       (performance.now() - this.lastUpdateTime) / SERVER_TICK_MS,
     );
 
-    if (!this.player) {
+    if (!this.player && !this.followId) {
       this.spectatorX += this.spectatorDX;
       this.spectatorY += this.spectatorDY;
       if (this.spectatorX < 500 || this.spectatorX > this.worldWidth - 500)
@@ -787,7 +804,7 @@ class GameClient {
   #getRenderPos(entity, alpha) {
     if (entity.type === 'tail') {
       const owner = this.#findPlayerByPlayerId(entity.playerId);
-      const osize = owner ? this.#getRenderPos(owner, alpha).size : 10;
+      const osize = owner ? this.#getRenderPos(owner, alpha).size : (entity.size ?? 10);
       const prev = this.prevPositions.get(entity.id);
       const target = this.targetPositions.get(entity.id);
       if (!prev || !target) {
@@ -1051,6 +1068,8 @@ class GameClient {
     const playerPositions = new Map();
     const labelInfos = [];
     const labeledPlayerIds = new Set();
+    const watched = this.followId ? this.followed : null;
+    const visionRadius = watched ? this.#getVisionRadius(watched.size || 10) : 0;
 
     for (const entity of this.entityMap.values()) {
       if (entity.type === 'point') {
@@ -1074,7 +1093,7 @@ class GameClient {
         const pid = entity.playerId;
         if (!snakeTails.has(pid)) snakeTails.set(pid, []);
         const pos = this.#getRenderPos(entity, alpha);
-        snakeTails.get(pid).push({ id: entity.id, x: pos.x, y: pos.y, size: pos.size });
+        snakeTails.get(pid).push({ id: entity.id, x: pos.x, y: pos.y, size: pos.size, color: entity.color });
         continue;
       }
 
@@ -1091,12 +1110,7 @@ class GameClient {
       const playerEntity = playerEntities.get(playerId);
       const headPos = playerPositions.get(playerId);
       if (!playerEntity || !headPos) {
-        for (const seg of tails) {
-          this.#forEachTorusCopy(seg.x, seg.y, seg.size, camX, camY, camR, camB, (x, y) => {
-            this.ctx.fillStyle = '#888888';
-            this.ctx.fillRect(x, y, seg.size, seg.size);
-          });
-        }
+        this.#drawSnakeBody(tails, tails[0].color, tails[0].size, camX, camY, camR, camB);
         continue;
       }
 
@@ -1158,6 +1172,15 @@ class GameClient {
 
     this.#drawBoostParticles(camX, camY, camR, camB);
 
+    if (watched) {
+      const head = this.#getRenderPos(watched, alpha);
+      this.ctx.beginPath();
+      this.ctx.rect(camX, camY, camR - camX, camB - camY);
+      this.ctx.arc(head.x + head.size / 2, head.y + head.size / 2, visionRadius, 0, Math.PI * 2, true);
+      this.ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+      this.ctx.fill('evenodd');
+    }
+
     this.ctx.restore();
     this.#drawMinimap();
   }
@@ -1167,13 +1190,12 @@ class GameClient {
   #getVisionRadius(size) {
     const SPAWN_SIZE = 10;
     const GROWTH_CAP_SIZE = 100;
-    const FOG_RADIUS_MIN = 300;
-    const FOG_RADIUS_MAX = 2500;
+    const { min, max } = this.fogRadius;
     const t = Math.min(
       1,
       Math.max(0, (size - SPAWN_SIZE) / (GROWTH_CAP_SIZE - SPAWN_SIZE)),
     );
-    return FOG_RADIUS_MIN + (FOG_RADIUS_MAX - FOG_RADIUS_MIN) * t;
+    return min + (max - min) * t;
   }
 
   #getTargetZoom(visionRadius) {
@@ -1188,8 +1210,9 @@ class GameClient {
   }
 
   #updateZoom() {
-    if (this.player) {
-      const visionRadius = this.#getVisionRadius(this.player.size || 10);
+    const target = this.player || this.followed;
+    if (target) {
+      const visionRadius = this.#getVisionRadius(target.size || 10);
       this._targetZoom = this.#getTargetZoom(visionRadius);
     } else {
       this._targetZoom = 1;
@@ -1201,10 +1224,13 @@ class GameClient {
     this.#updateZoom();
 
     let camX, camY;
-    if (this.player) {
-      const pos = this.#getRenderPos(this.player, alpha);
+    const target = this.player || this.followed;
+    if (target) {
+      const pos = this.#getRenderPos(target, alpha);
       camX = pos.x;
       camY = pos.y;
+      this.spectatorX = camX;
+      this.spectatorY = camY;
     } else {
       camX = this.spectatorX;
       camY = this.spectatorY;
@@ -1215,15 +1241,25 @@ class GameClient {
   }
 
   #updateUI() {
-    let htmlString = '';
-    for (const [index, player] of this.leaderboard.entries()) {
-      htmlString += `<div><b>${index + 1}.</b> ${player.name || 'Brak'}: ${player.points}</div>`;
-    }
-    this.leaderboardContent.innerHTML = htmlString;
+    const cell = (className, text) => {
+      const span = document.createElement('span');
+      span.className = className;
+      span.textContent = text;
+      return span;
+    };
+    const meIndex = this.leaderboard.findIndex(
+      (player) => this.player && player.name === this.player.name && player.points === this.player.points,
+    );
+    this.leaderboardContent.replaceChildren(...this.leaderboard.map((player, index) => {
+      const row = document.createElement('div');
+      row.classList.toggle('me', index === meIndex);
+      row.append(cell('rank', `${index + 1}.`), cell('name', player.name || 'Brak'), cell('points', player.points));
+      return row;
+    }));
 
     if (this.player) {
-      this.playerPoints.innerHTML = this.player.points || 0;
-      this.name.innerHTML = this.player.name || 'Brak';
+      this.playerPoints.textContent = this.player.points || 0;
+      this.name.textContent = this.player.name || 'Brak';
     }
 
     this._uiDirty = false;
@@ -1339,7 +1375,7 @@ class GameClient {
     this.#resetState();
     clearInterval(this.pingIntervalId);
     this.socket.disconnect();
-    this.socket = io('');
+    this.socket = io('', { auth: { token: LAB_TOKEN, follow: FOLLOW } });
     this.spectatorX = Math.random() * this.worldWidth;
     this.spectatorY = Math.random() * this.worldHeight;
     this.spectatorDX =

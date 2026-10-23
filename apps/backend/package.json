@@ -3,10 +3,17 @@
 	"version": "1.0.0",
 	"description": "",
 	"main": "index.js",
+	"exports": {
+		"./GameServer": "./class/GameServer.js",
+		"./Config": "./class/Config.js",
+		"./login": "./helpers/login.js",
+		"./client": "./helpers/client.js"
+	},
 	"type": "module",
 	"scripts": {
 		"dev": "nodemon index.js",
-		"start": "node index.js"
+		"start": "node index.js",
+		"test": "node --test admin/*.test.js class/*.test.js helpers/*.test.js"
 	},
 	"keywords": [],
 	"author": "",

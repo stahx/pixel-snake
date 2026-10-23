@@ -1,0 +1,5 @@
+python-socketio[client]>=5.11
+pytest>=8
+torch>=2.9
+numpy>=2
+websocket-client>=1.8

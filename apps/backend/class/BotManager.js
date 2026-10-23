@@ -14,6 +14,7 @@ export default class BotManager {
   constructor(gameServer) {
     this.game = gameServer;
     this.bots = new Set();
+    this.extras = new Set();
   }
 
   isBot(playerId) {
@@ -21,11 +22,8 @@ export default class BotManager {
   }
 
   reconcile() {
-    const humanCount = this.game.humanSockets.size;
-    const desired = humanCount > 0
-      ? Math.max(0, this.game.config.MIN_PLAYERS - humanCount)
-      : 0;
-    const current = this.bots.size;
+    const desired = this.game.humanSockets.size > 0 ? this.game.config.BOTS : 0;
+    const current = this.bots.size - this.extras.size;
 
     if (current < desired) {
       for (let i = 0; i < desired - current; i++) {
@@ -35,21 +33,29 @@ export default class BotManager {
       let toRemove = current - desired;
       for (const botId of this.bots) {
         if (toRemove <= 0) break;
+        if (this.extras.has(botId)) continue;
         this.remove(botId);
         toRemove--;
       }
     }
   }
 
+  spawnExtra(position) {
+    const player = this.#spawn(position);
+    this.extras.add(player.playerId);
+    return player;
+  }
+
   remove(botId) {
     this.game.removePlayerEntities(botId);
     this.bots.delete(botId);
+    this.extras.delete(botId);
   }
 
   tick() {
     const W = this.game.config.MAP_WIDTH;
     const H = this.game.config.MAP_HEIGHT;
-    const now = Date.now();
+    const now = this.game.tick * 1000 / this.game.config.TICK_RATE;
 
     for (const botId of this.bots) {
       const player = this.game.players.get(botId);
@@ -80,12 +86,8 @@ export default class BotManager {
     }
   }
 
-  #spawn() {
+  #spawn(position = getRandomPosition(this.game.config.MAP_WIDTH, this.game.config.MAP_HEIGHT)) {
     const botId = `bot:${++_botIdCounter}`;
-    const position = getRandomPosition(
-      this.game.config.MAP_WIDTH,
-      this.game.config.MAP_HEIGHT
-    );
     const name = BOT_NAMES[Math.floor(Math.random() * BOT_NAMES.length)];
 
     const playerEntity = new Player(position.x, position.y, {
@@ -106,6 +108,7 @@ export default class BotManager {
     this.game.allEntities.set(playerEntity.id, playerEntity);
     this.game.tails.set(botId, []);
     this.bots.add(botId);
+    return playerEntity;
   }
 
   #scanDanger(player, pcx, pcy) {

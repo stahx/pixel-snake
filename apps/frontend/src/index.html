@@ -156,7 +156,7 @@
         <div class="deathscreen-content">
           <div class="deathscreen-title">Nie żyjesz</div>
           <div class="deathscreen-buttons">
-            <button onclick="restart()">Graj od nowa</button>
+            <button onclick="game.start(document.querySelector('#name-input').value)">Graj od nowa</button>
             <button onclick="game.returnToMenu()">Return to Menu</button>
           </div>
         </div>
@@ -206,6 +206,7 @@
     <script src="https://cdn.jsdelivr.net/npm/socket.io-client@4.5.2/dist/socket.io.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/axios/1.0.0/axios.min.js"></script>
     <script src="./class/GameClient.js"></script>
+    <script src="./admin/AdminPanel.js"></script>
     <script
       data-goatcounter="https://slither-stats.stah.dev/count"
       data-goatcounter-settings='{"no_onload": true}'
@@ -259,6 +260,7 @@
       });
 
       const game = new GameClient();
+      new AdminPanel(game);
 
       fetch('/version')
         .then((r) => r.json())
@@ -268,11 +270,6 @@
           });
         })
         .catch(() => {});
-
-      function restart() {
-        game.start(document.querySelector('#name-input').value);
-        document.querySelector('#deathscreen').style.display = 'none';
-      }
 
       document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape' && game.isGameRunning()) {
@@ -318,7 +315,7 @@
         false,
       );
 
-      if (window.goatcounter && goatcounter.count) {
+      if (window.goatcounter && goatcounter.count && !LAB_TOKEN) {
         goatcounter.count();
       }
     </script>
