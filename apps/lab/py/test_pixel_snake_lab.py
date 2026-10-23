@@ -7,7 +7,7 @@ import pytest
 import socketio
 
 import pixel_snake_lab
-from pixel_snake_lab import Game, apply_update, find_worlds, load_env, split_lines
+from pixel_snake_lab import Game, apply_update, find_worlds, load_env, seen_kills, split_lines, touches
 
 
 def test_load_env(tmp_path, monkeypatch):
@@ -40,6 +40,31 @@ def test_apply_update():
         2: {'id': 2, 'type': 'point', 'x': 50, 'y': 60, 'color': '#000', 'size': 16},
     }
     assert before_change[1]['x'] == 10
+
+
+def test_seen_kills():
+    info = {'map': {'width': 4000, 'height': 4000}, 'fogRadius': {'min': 300, 'max': 2500},
+            'growth': {'spawnSize': 10, 'maxSize': 100}}
+    me = {'id': 1, 'type': 'player', 'player': 'me', 'x': 1000, 'y': 1000, 'size': 20, 'points': 30}
+    entities = {
+        1: me,
+        2: {'id': 2, 'type': 'tail', 'player': 'me', 'x': 1030, 'y': 1000, 'size': 20},
+        3: {'id': 3, 'type': 'tail', 'player': 'me', 'x': 1530, 'y': 1000, 'size': 20},
+        10: {'id': 10, 'type': 'player', 'player': 'a', 'x': 1032, 'y': 1012, 'size': 10, 'points': 40},
+        11: {'id': 11, 'type': 'player', 'player': 'b', 'x': 1300, 'y': 1300, 'size': 10, 'points': 90},
+        12: {'id': 12, 'type': 'player', 'player': 'c', 'x': 1532, 'y': 1005, 'size': 10, 'points': 70},
+        13: {'id': 13, 'type': 'point', 'x': 1031, 'y': 1001, 'size': 8},
+    }
+
+    assert seen_kills(entities, me, [10, 11, 12, 13], info) == [{'points': 40, 'distance': pytest.approx(27.89, abs=0.01), 'size': 20}]
+    assert seen_kills(entities, me, [1, 10], info) == []
+    assert seen_kills(entities, None, [10], info) == []
+
+
+def test_touches():
+    assert touches({'x': 3998, 'y': 10, 'size': 10}, {'x': 2, 'y': 12, 'size': 10}, 4000, 4000)
+    assert touches({'x': 100, 'y': 100, 'size': 10}, {'x': 113, 'y': 100, 'size': 10}, 4000, 4000)
+    assert not touches({'x': 100, 'y': 100, 'size': 10}, {'x': 115, 'y': 100, 'size': 10}, 4000, 4000)
 
 
 def test_find_worlds(monkeypatch):

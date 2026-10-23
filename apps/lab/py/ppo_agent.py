@@ -27,7 +27,9 @@ DEVICE = torch.accelerator.current_accelerator() or torch.device('cpu')
 PARAMETERS = {
     'kill_reward': 30.0,
     'kill_share': 0.5,
+    'cutoff_reward': 0.0,
     'death_penalty': -50.0,
+    'death_points_share': 1.0,
     # Returns in the hundreds would make the value loss drown the policy gradient in the shared body.
     'reward_scale': 0.01,
     'gamma': 0.99,
@@ -47,6 +49,8 @@ PARAMETERS = {
 HERE = Path(__file__).resolve().parent
 CHECKPOINTS = HERE.parent if HERE.parent.name == 'checkpoints' else HERE / 'checkpoints'
 RUN_FILES = ('model.py', 'controller.py', 'pixel_snake_lab.py')
+CUTOFF_DISTANCE = 150
+CUTOFF_SIZES = 3
 
 
 def parameters(values, source):
@@ -59,11 +63,15 @@ def parameters(values, source):
     return {name: type(default)(values[name]) for name, default in PARAMETERS.items() if name in values}
 
 
+def cutoff(kill):
+    return kill['distance'] <= max(CUTOFF_DISTANCE, CUTOFF_SIZES * kill['size'])
+
+
 def reward_for(observation, next_observation, config):
-    kills = (config['kill_reward'] * (next_observation['kills'] - observation['kills'])
-             + config['kill_share'] * (next_observation['kill_points'] - observation['kill_points']))
+    kills = sum(config['kill_reward'] + config['kill_share'] * kill['points'] + config['cutoff_reward'] * cutoff(kill)
+                for kill in next_observation['seen_kills'][len(observation['seen_kills']):])
     if not next_observation['alive']:
-        return kills + config['death_penalty'] - observation['me']['points']
+        return kills + config['death_penalty'] - config['death_points_share'] * observation['me']['points']
     return kills + next_observation['me']['points'] - observation['me']['points']
 
 
@@ -85,8 +93,11 @@ def train_session(group, world, run, net, rollouts, learner_stats, label, config
     segment = {'states': [], 'actions': [], 'log_probs': [], 'values': [], 'rewards': [], 'dones': []}
     episode_return = 0.0
     episode_kills = 0
+    episode_seen = 0
     steps = 0
+    ticks = 0
     dropped = 0
+    boosts = {'small': [0, 0], 'big': [0, 0]}
 
     def send(last_value):
         nonlocal dropped
@@ -101,6 +112,10 @@ def train_session(group, world, run, net, rollouts, learner_stats, label, config
             values.clear()
 
     for step in play(game, net):
+        me = step.observation['me']
+        counts = boosts['big' if me['size'] >= game.info['growth']['maxSize'] / 2 else 'small']
+        counts[0] += 1
+        counts[1] += ACTIONS[step.action][1] and me['points'] > 0
         reward = reward_for(step.observation, step.next_observation, config)
         done = not step.next_observation['alive']
         for name, item in (('states', step.state), ('actions', step.action), ('log_probs', step.log_prob),
@@ -108,19 +123,26 @@ def train_session(group, world, run, net, rollouts, learner_stats, label, config
             segment[name].append(item)
         episode_return += reward
         steps += 1
+        ticks += step.elapsed
 
         if done:
             send(0.0)
             metrics = {'reward': episode_return, 'steps': steps, 'kills': step.next_observation['kills'] - episode_kills,
-                       'dropped_steps': dropped}
+                       'dropped_steps': dropped,
+                       **{f'boost_{size}_pct': 100 * boosted / total for size, (total, boosted) in boosts.items() if total}}
+            seen = step.next_observation['seen_kills'][episode_seen:]
+            metrics.update({'kills_seen': len(seen), 'cutoffs': sum(map(cutoff, seen)),
+                            'kills_per_min': len(seen) / (ticks / game.info['tickRate'] / 60)})
             try:
                 metrics.update(learner_stats.get_nowait())
             except queue.Empty:
                 pass
             game.log(**metrics)
             print(f'{label}: return {episode_return:.1f}, steps {steps}', flush=True)
-            episode_return, steps, dropped = 0.0, 0, 0
+            episode_return, steps, dropped, ticks = 0.0, 0, 0, 0
+            boosts = {'small': [0, 0], 'big': [0, 0]}
             episode_kills = step.next_observation['kills']
+            episode_seen = len(step.next_observation['seen_kills'])
         elif len(segment['actions']) >= config['segment_steps']:
             send(act(net, radar(step.next_observation, game.info, step.elapsed))[2])
 

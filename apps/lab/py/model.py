@@ -5,6 +5,8 @@ import torch
 from torch import nn
 from torch.distributions import Categorical
 
+from pixel_snake_lab import fog_radius
+
 TURNS = (-0.32, -0.16, 0.0, 0.16, 0.32)
 ACTIONS = [(turn, boost) for turn in TURNS for boost in (False, True)]
 
@@ -59,12 +61,6 @@ def wrapped(delta, size):
 
 CELL_GAPS = np.abs(np.arange(GRID_SIZE) - GRID_SIZE / 2 + 0.5) * GRID_CELL - GRID_CELL / 2
 CELL_NEAREST = np.hypot(*np.meshgrid(CELL_GAPS, CELL_GAPS, indexing='ij'))
-
-
-def fog_radius(me, info):
-    fog, growth = info['fogRadius'], info['growth']
-    progress = min(1.0, max(0.0, (me['size'] - growth['spawnSize']) / (growth['maxSize'] - growth['spawnSize'])))
-    return fog['min'] + (fog['max'] - fog['min']) * progress
 
 
 def radar(observation, info, elapsed):

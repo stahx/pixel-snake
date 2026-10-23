@@ -5,8 +5,10 @@ import numpy as np
 import pytest
 import torch
 
+import ppo_agent
+from controller import Step
 from model import ACTIONS, RADAR_FEATURES, ActorCritic
-from ppo_agent import DEVICE, PARAMETERS, advantages, learn, parameters, reward_for, save
+from ppo_agent import DEVICE, PARAMETERS, advantages, learn, parameters, reward_for, save, train_session
 
 
 def test_advantages():
@@ -19,13 +21,20 @@ def test_advantages():
 
 
 def test_reward_for():
-    alive = {'alive': True, 'me': {'points': 120}, 'kills': 2, 'kill_points': 40}
+    earlier = {'points': 40, 'distance': 400.0, 'size': 20}
+    alive = {'alive': True, 'me': {'points': 120}, 'seen_kills': [earlier]}
+    far = {'points': 60, 'distance': 400.0, 'size': 20}
+    cut = {'points': 0, 'distance': 50.0, 'size': 20}
+    big_cut = {'points': 0, 'distance': 250.0, 'size': 100}
+    dead = {'alive': False, 'me': None, 'seen_kills': [earlier]}
 
-    assert reward_for(alive, {'alive': True, 'me': {'points': 123}, 'kills': 2, 'kill_points': 40}, PARAMETERS) == 3
-    assert reward_for(alive, {'alive': True, 'me': {'points': 123}, 'kills': 3, 'kill_points': 100}, PARAMETERS) == 63
-    assert reward_for(alive, {'alive': False, 'me': None, 'kills': 2, 'kill_points': 40}, PARAMETERS) == -170
-    assert reward_for(alive, {'alive': False, 'me': None, 'kills': 2, 'kill_points': 40},
-                      PARAMETERS | {'death_penalty': -10.0}) == -130
+    assert reward_for(alive, {'alive': True, 'me': {'points': 123}, 'seen_kills': [earlier]}, PARAMETERS) == 3
+    assert reward_for(alive, {'alive': True, 'me': {'points': 123}, 'seen_kills': [earlier, far]}, PARAMETERS) == 63
+    assert reward_for(alive, {'alive': True, 'me': {'points': 120}, 'seen_kills': [earlier, far, cut, big_cut]},
+                      PARAMETERS | {'cutoff_reward': 500.0}) == 60 + 530 + 530
+    assert reward_for(alive, dead, PARAMETERS) == -170
+    assert reward_for(alive, dead, PARAMETERS | {'death_penalty': -10.0}) == -130
+    assert reward_for(alive, dead, PARAMETERS | {'death_points_share': 0.3}) == pytest.approx(-86)
 
 
 def test_parameters():
@@ -72,3 +81,36 @@ def test_learn(tmp_path):
     logged = stats.get_nowait()
     assert logged['update'] == 1 and logged['approx_kl'] >= 0
     assert 0 <= logged['clip_frac'] <= 1 and 0 < logged['learner_busy_pct'] <= 100
+
+
+def test_train_session(monkeypatch):
+    logged = []
+
+    class FakeGame:
+        info = {'growth': {'maxSize': 100}, 'tickRate': 60}
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def log(self, **metrics):
+            logged.append(metrics)
+
+    cut = {'points': 0, 'distance': 30.0, 'size': 60}
+
+    def step(boost, size, alive=True, seen=(), seen_next=()):
+        action = ACTIONS.index((0.0, boost))
+        observation = {'alive': True, 'me': {'size': size, 'points': 50}, 'kills': 0, 'seen_kills': list(seen)}
+        next_observation = {'alive': alive, 'me': {'size': size, 'points': 50} if alive else None, 'kills': 0,
+                            'seen_kills': list(seen_next)}
+        return Step(np.zeros(RADAR_FEATURES, dtype=np.float32), action, -1.0, 0.0, observation, next_observation, 4)
+
+    steps = [step(True, 10), step(False, 10), step(True, 60, seen_next=[cut]), step(True, 60, alive=False, seen=[cut], seen_next=[cut])]
+    monkeypatch.setattr(ppo_agent, 'Game', FakeGame)
+    monkeypatch.setattr(ppo_agent, 'play', lambda game, net: iter(steps))
+    rollouts = queue.Queue()
+    train_session('quiet', 0, 'run', None, rollouts, queue.Queue(), 'quiet #1 session 0', PARAMETERS)
+
+    assert logged == [{'reward': pytest.approx(-70.0), 'steps': 4, 'kills': 0, 'dropped_steps': 0,
+                       'boost_small_pct': 50.0, 'boost_big_pct': 100.0,
+                       'kills_seen': 1, 'cutoffs': 1, 'kills_per_min': pytest.approx(225.0)}]
+    assert rollouts.get_nowait()['actions'].tolist() == [step.action for step in steps]

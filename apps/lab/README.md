@@ -180,7 +180,8 @@ CUDA), otherwise on the CPU; the log's `learning on …` line says which.
 
 ### Parameters
 
-Rewards and PPO settings (`kill_reward`, `death_penalty`, `gamma`,
+Rewards and PPO settings (`kill_reward`, `death_penalty`, `death_points_share`
+(how much of its points a snake loses as a penalty when it dies, 1 = all), `gamma`,
 `learning_rate`, `entropy_coef`, `batch_steps`, …; `--help` lists them with
 their defaults) live in `checkpoints/<run>/config.json`. On every start the
 trainer takes the file, applies the edits waiting in the lab panel (run →

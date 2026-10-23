@@ -19,6 +19,8 @@ ENTITY_TYPES = ('point', 'tail', 'player')
 FIELD_NAMES = {'i': 'id', 't': 'type', 'x': 'x', 'y': 'y', 'c': 'color', 's': 'size',
                'p': 'player', 'n': 'name', 'pt': 'points', 'a': 'angle', 'b': 'boosting'}
 AIM_DISTANCE = 200
+# A head moves up to this far in the tick it dies, so its last seen position can miss the body by that much.
+KILL_SLACK = 4
 
 
 def load_env(path=next((folder / '.env' for folder in Path(__file__).resolve().parents if (folder / '.env').exists()), '')):
@@ -119,6 +121,39 @@ def stream_output(run, key=None):
     atexit.register(finish)
 
 
+def fog_radius(me, info):
+    fog, growth = info['fogRadius'], info['growth']
+    progress = min(1.0, max(0.0, (me['size'] - growth['spawnSize']) / (growth['maxSize'] - growth['spawnSize'])))
+    return fog['min'] + (fog['max'] - fog['min']) * progress
+
+
+def touches(head, segment, width, height):
+    dx = (segment['x'] - head['x'] + width / 2) % width - width / 2
+    dy = (segment['y'] - head['y'] + height / 2) % height - height / 2
+    low, high = -segment['size'] - KILL_SLACK, head['size'] + KILL_SLACK
+    return low < dx < high and low < dy < high
+
+
+def seen_kills(entities, me, removed, info):
+    """Enemy heads that vanished well inside our view while touching our body: the kills a player can tell from the screen."""
+    if not me or not info or me['id'] in removed:
+        return []
+    width, height = info['map']['width'], info['map']['height']
+    body = [entity for entity in entities.values() if entity['type'] == 'tail' and entity['player'] == me['player']]
+    view = fog_radius(me, info)
+    kills = []
+    for entity_id in removed:
+        victim = entities.get(entity_id)
+        if not victim or victim['type'] != 'player' or victim['player'] == me['player']:
+            continue
+        dx = (victim['x'] + victim['size'] / 2 - me['x'] - me['size'] / 2 + width / 2) % width - width / 2
+        dy = (victim['y'] + victim['size'] / 2 - me['y'] - me['size'] / 2 + height / 2) % height - height / 2
+        distance = math.hypot(dx, dy)
+        if distance <= view - 2 * victim['size'] and any(touches(victim, segment, width, height) for segment in body):
+            kills.append({'points': victim['points'], 'distance': distance, 'size': me['size']})
+    return kills
+
+
 def rename_fields(wire_entity):
     return {FIELD_NAMES[short_name]: value for short_name, value in wire_entity.items()}
 
@@ -151,6 +186,7 @@ class Game:
         self.tick = 0
         self.kills = 0
         self.kill_points = 0
+        self.seen_kills = []
         self.sid = None
         self._connect_error = None
         self._disconnected = False
@@ -184,7 +220,7 @@ class Game:
             if self._disconnected:
                 raise ConnectionError('Disconnected from the world')
             return {'tick': self.tick, 'alive': self.alive, 'me': self.me, 'kills': self.kills, 'kill_points': self.kill_points,
-                    'entities': dict(self.entities), 'leaderboard': self.leaderboard}
+                    'seen_kills': list(self.seen_kills), 'entities': dict(self.entities), 'leaderboard': self.leaderboard}
 
     def aim(self, x, y):
         self._emit('change-dir', {'mouseX': x, 'mouseY': y})
@@ -235,6 +271,7 @@ class Game:
 
     def _on_update(self, update):
         with self._changed:
+            self.seen_kills.extend(seen_kills(self.entities, self.me, update.get('r', []), self.info))
             apply_update(self.entities, update)
             if 'l' in update:
                 self.leaderboard = update['l']
